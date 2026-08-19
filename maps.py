@@ -234,12 +234,12 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             timeout=10,
             addressdetails=True,
             exactly_one=False,
-            limit=20,
+            limit=50,
         )
 
         if origin_lat is not None and origin_lon is not None:
 
-            box_size = 1.5  # degrees, ~ local/regional search
+            box_size = 0.6  # degrees, ~ tight local search (~40 mi)
 
             viewbox = [
                 (
@@ -267,7 +267,7 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
                 timeout=10,
                 addressdetails=True,
                 exactly_one=False,
-                limit=20,
+                limit=50,
             )
 
         if not locations:
