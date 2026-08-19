@@ -1,8 +1,10 @@
-import streamlit as st
+import os
+import re
 import requests
+import streamlit as st
 import folium
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from streamlit_folium import st_folium
@@ -16,7 +18,7 @@ from timezonefinder import TimezoneFinder
 # ============================================================
 
 st.set_page_config(
-    page_title="Map Explorer V3",
+    page_title="Map Explorer V4",
     page_icon="🗺️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -57,13 +59,29 @@ st.markdown(
     }
 
     .eta-time {
-        font-size: 38px;
+        font-size: 40px;
         font-weight: 800;
     }
 
     .eta-label {
         color: #687080;
         font-size: 14px;
+    }
+
+    .traffic-card {
+        background: white;
+        padding: 18px;
+        border-radius: 16px;
+        box-shadow: 0 3px 14px rgba(0,0,0,0.07);
+        margin-top: 12px;
+    }
+
+    .route-card {
+        background: white;
+        padding: 18px;
+        border-radius: 15px;
+        margin-bottom: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
     }
 
     .place-card {
@@ -99,7 +117,7 @@ defaults = {
     "search_lon": None,
     "search_address": None,
 
-    "route": None,
+    "routes": [],
 
     "favorites": [],
 
@@ -109,7 +127,7 @@ defaults = {
 
     "map_style": "OpenStreetMap",
 
-    "route_requested": False,
+    "traffic_mode": True,
 }
 
 for key, value in defaults.items():
@@ -123,14 +141,44 @@ for key, value in defaults.items():
 # ============================================================
 
 geolocator = Nominatim(
-    user_agent="map-explorer-v3"
+    user_agent="map-explorer-v4"
 )
 
 timezone_finder = TimezoneFinder()
 
 
 # ============================================================
-# SEARCH PLACE
+# GOOGLE ROUTES API KEY
+# ============================================================
+
+def get_google_api_key():
+
+    # Streamlit Cloud / secrets.toml
+    try:
+
+        key = st.secrets.get(
+            "GOOGLE_ROUTES_API_KEY"
+        )
+
+        if key:
+            return key
+
+    except Exception:
+        pass
+
+    # Environment variable
+    key = os.environ.get(
+        "GOOGLE_ROUTES_API_KEY"
+    )
+
+    if key:
+        return key
+
+    return None
+
+
+# ============================================================
+# SEARCH
 # ============================================================
 
 def search_place(query):
@@ -182,19 +230,17 @@ def reverse_geocode(lat, lon):
 
 
 # ============================================================
-# FIND TIMEZONE
+# TIMEZONE
 # ============================================================
 
 def get_timezone(lat, lon):
 
     try:
 
-        timezone_name = timezone_finder.timezone_at(
+        return timezone_finder.timezone_at(
             lat=lat,
             lng=lon,
         )
-
-        return timezone_name
 
     except Exception:
 
@@ -202,105 +248,363 @@ def get_timezone(lat, lon):
 
 
 # ============================================================
-# CURRENT LOCAL TIME
+# PARSE GOOGLE DURATION
 # ============================================================
 
-def get_local_time(lat, lon):
+def parse_google_duration(value):
 
-    timezone_name = get_timezone(
-        lat,
-        lon,
+    if not value:
+        return 0
+
+    match = re.search(
+        r"([0-9]+(?:\.[0-9]+)?)s",
+        value,
     )
 
-    if timezone_name:
+    if match:
+        return float(
+            match.group(1)
+        )
 
-        try:
+    return 0
 
-            local_time = datetime.now(
-                ZoneInfo(timezone_name)
+
+# ============================================================
+# GOOGLE POLYLINE DECODER
+# ============================================================
+
+def decode_polyline(encoded):
+
+    """
+    Decode Google's encoded polyline.
+
+    Returns:
+        [[lat, lon], [lat, lon], ...]
+    """
+
+    coordinates = []
+
+    index = 0
+    lat = 0
+    lon = 0
+
+    while index < len(encoded):
+
+        # Latitude
+        result = 0
+        shift = 0
+
+        while True:
+
+            byte = ord(
+                encoded[index]
+            ) - 63
+
+            index += 1
+
+            result |= (
+                (byte & 0x1F)
+                << shift
             )
 
-            return local_time, timezone_name
+            shift += 5
 
-        except Exception:
-            pass
+            if byte < 0x20:
+                break
 
-    return datetime.now(), "Local time"
+        if result & 1:
+
+            lat_change = ~(
+                result >> 1
+            )
+
+        else:
+
+            lat_change = (
+                result >> 1
+            )
+
+        lat += lat_change
+
+        # Longitude
+        result = 0
+        shift = 0
+
+        while True:
+
+            byte = ord(
+                encoded[index]
+            ) - 63
+
+            index += 1
+
+            result |= (
+                (byte & 0x1F)
+                << shift
+            )
+
+            shift += 5
+
+            if byte < 0x20:
+                break
+
+        if result & 1:
+
+            lon_change = ~(
+                result >> 1
+            )
+
+        else:
+
+            lon_change = (
+                result >> 1
+            )
+
+        lon += lon_change
+
+        coordinates.append(
+            [
+                lat / 100000.0,
+                lon / 100000.0,
+            ]
+        )
+
+    return coordinates
 
 
 # ============================================================
-# ROUTING
+# GOOGLE ROUTES API
 # ============================================================
 
-def get_route(
+def get_google_routes(
     start_lat,
     start_lon,
     end_lat,
     end_lon,
 ):
 
+    api_key = get_google_api_key()
+
+    if not api_key:
+        return {
+            "error": (
+                "Google Routes API key not found."
+            )
+        }
+
     url = (
-        "https://router.project-osrm.org/"
-        "route/v1/driving/"
-        f"{start_lon},{start_lat};"
-        f"{end_lon},{end_lat}"
+        "https://routes.googleapis.com/"
+        "directions/v2:computeRoutes"
     )
 
-    params = {
-        "overview": "full",
-        "geometries": "geojson",
-        "alternatives": "true",
-        "steps": "false",
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": (
+            "routes.duration,"
+            "routes.staticDuration,"
+            "routes.distanceMeters,"
+            "routes.polyline.encodedPolyline,"
+            "routes.routeLabels,"
+            "routes.description"
+        ),
+    }
+
+    body = {
+
+        "origin": {
+            "location": {
+                "latLng": {
+                    "latitude": start_lat,
+                    "longitude": start_lon,
+                }
+            }
+        },
+
+        "destination": {
+            "location": {
+                "latLng": {
+                    "latitude": end_lat,
+                    "longitude": end_lon,
+                }
+            }
+        },
+
+        "travelMode": "DRIVE",
+
+        "routingPreference":
+            "TRAFFIC_AWARE_OPTIMAL",
+
+        "computeAlternativeRoutes": True,
+
+        "languageCode": "en-US",
+
+        "units": "IMPERIAL",
     }
 
     try:
 
-        response = requests.get(
+        response = requests.post(
             url,
-            params=params,
-            timeout=20,
+            headers=headers,
+            json=body,
+            timeout=45,
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+
+            try:
+                error_data = response.json()
+            except Exception:
+                error_data = response.text
+
+            return {
+                "error": (
+                    f"Google Routes API error "
+                    f"{response.status_code}: "
+                    f"{error_data}"
+                )
+            }
 
         data = response.json()
 
-        if data.get("code") != "Ok":
-            return None
+        routes = []
 
-        routes = data.get(
+        for route in data.get(
             "routes",
-            [],
-        )
+            []
+        ):
 
-        if not routes:
-            return None
+            traffic_seconds = (
+                parse_google_duration(
+                    route.get(
+                        "duration"
+                    )
+                )
+            )
 
-        processed_routes = []
+            normal_seconds = (
+                parse_google_duration(
+                    route.get(
+                        "staticDuration"
+                    )
+                )
+            )
 
-        for route in routes:
+            distance_meters = (
+                route.get(
+                    "distanceMeters",
+                    0
+                )
+            )
 
-            processed_routes.append(
+            encoded_polyline = (
+                route
+                .get("polyline", {})
+                .get(
+                    "encodedPolyline"
+                )
+            )
+
+            geometry = []
+
+            if encoded_polyline:
+
+                geometry = decode_polyline(
+                    encoded_polyline
+                )
+
+            traffic_delay = max(
+                0,
+                traffic_seconds
+                - normal_seconds,
+            )
+
+            routes.append(
                 {
+                    "traffic_seconds":
+                        traffic_seconds,
+
+                    "normal_seconds":
+                        normal_seconds,
+
+                    "traffic_minutes":
+                        traffic_seconds / 60,
+
+                    "normal_minutes":
+                        normal_seconds / 60,
+
+                    "traffic_delay_minutes":
+                        traffic_delay / 60,
+
                     "distance_miles":
-                        route["distance"] / 1609.344,
+                        distance_meters / 1609.344,
 
                     "distance_km":
-                        route["distance"] / 1000,
-
-                    "duration_minutes":
-                        route["duration"] / 60,
+                        distance_meters / 1000,
 
                     "geometry":
-                        route["geometry"]["coordinates"],
+                        geometry,
+
+                    "labels":
+                        route.get(
+                            "routeLabels",
+                            []
+                        ),
+
+                    "description":
+                        route.get(
+                            "description",
+                            ""
+                        ),
                 }
             )
 
-        return processed_routes
+        return {
+            "routes": routes
+        }
 
-    except Exception:
+    except requests.RequestException as exc:
 
-        return None
+        return {
+            "error": (
+                f"Network error: {exc}"
+            )
+        }
+
+    except Exception as exc:
+
+        return {
+            "error": (
+                f"Unexpected error: {exc}"
+            )
+        }
+
+
+# ============================================================
+# TRAFFIC LABEL
+# ============================================================
+
+def traffic_label(delay_minutes):
+
+    if delay_minutes <= 2:
+
+        return (
+            "🟢 Normal traffic",
+            "Normal"
+        )
+
+    if delay_minutes <= 8:
+
+        return (
+            "🟠 Moderate traffic",
+            "Moderate"
+        )
+
+    return (
+        "🔴 Heavy traffic",
+        "Heavy"
+    )
 
 
 # ============================================================
@@ -371,28 +675,38 @@ def get_nearby_places(
 
         for element in data.get(
             "elements",
-            [],
+            []
         ):
 
             tags = element.get(
                 "tags",
-                {},
+                {}
             )
 
             if element["type"] == "node":
 
-                place_lat = element.get("lat")
-                place_lon = element.get("lon")
+                place_lat = element.get(
+                    "lat"
+                )
+
+                place_lon = element.get(
+                    "lon"
+                )
 
             else:
 
                 center = element.get(
                     "center",
-                    {},
+                    {}
                 )
 
-                place_lat = center.get("lat")
-                place_lon = center.get("lon")
+                place_lat = center.get(
+                    "lat"
+                )
+
+                place_lon = center.get(
+                    "lon"
+                )
 
             if (
                 place_lat is None
@@ -400,17 +714,22 @@ def get_nearby_places(
             ):
                 continue
 
-            name = tags.get(
-                "name",
-                "Unnamed place",
-            )
-
             places.append(
                 {
-                    "name": name,
-                    "lat": place_lat,
-                    "lon": place_lon,
-                    "type": category,
+                    "name":
+                        tags.get(
+                            "name",
+                            "Unnamed place"
+                        ),
+
+                    "lat":
+                        place_lat,
+
+                    "lon":
+                        place_lon,
+
+                    "type":
+                        category,
                 }
             )
 
@@ -426,13 +745,15 @@ def get_nearby_places(
 # ============================================================
 
 st.markdown(
-    '<div class="title">🗺️ Map Explorer</div>',
+    '<div class="title">'
+    "🗺️ Map Explorer V4"
+    "</div>",
     unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="subtitle">'
-    "Search places, get directions, and see your arrival time."
+    "Traffic-aware directions and real-time ETA"
     "</div>",
     unsafe_allow_html=True,
 )
@@ -480,9 +801,7 @@ with st.sidebar:
                     result["address"]
                 )
 
-                st.session_state.route = None
-
-                st.session_state.route_requested = False
+                st.session_state.routes = []
 
                 st.success(
                     "Destination found!"
@@ -515,11 +834,16 @@ with st.sidebar:
             and lon is not None
         ):
 
-            st.session_state.current_lat = lat
-            st.session_state.current_lon = lon
+            st.session_state.current_lat = (
+                lat
+            )
+
+            st.session_state.current_lon = (
+                lon
+            )
 
             st.success(
-                "Current location detected."
+                "Location detected!"
             )
 
             st.caption(
@@ -528,7 +852,29 @@ with st.sidebar:
 
     st.divider()
 
-    st.header("🚗 Directions")
+    st.header("🚦 Traffic Routing")
+
+    traffic_enabled = st.checkbox(
+        "Use live traffic",
+        value=True,
+    )
+
+    st.session_state.traffic_mode = (
+        traffic_enabled
+    )
+
+    if traffic_enabled:
+
+        st.caption(
+            "Using Google's "
+            "TRAFFIC_AWARE_OPTIMAL routing."
+        )
+
+    else:
+
+        st.caption(
+            "Traffic-aware routing is disabled."
+        )
 
     if st.button(
         "🛣️ Calculate Route",
@@ -536,43 +882,63 @@ with st.sidebar:
     ):
 
         if (
-            st.session_state.current_lat is not None
-            and st.session_state.search_lat is not None
+            st.session_state.current_lat is None
+            or st.session_state.search_lat is None
         ):
 
-            st.session_state.route_requested = True
+            st.warning(
+                "Allow location access and "
+                "search for a destination."
+            )
 
-            with st.spinner(
-                "Calculating route..."
-            ):
+        else:
 
-                routes = get_route(
-                    st.session_state.current_lat,
-                    st.session_state.current_lon,
-                    st.session_state.search_lat,
-                    st.session_state.search_lon,
-                )
+            api_key = get_google_api_key()
 
-            if routes:
+            if not api_key:
 
-                st.session_state.route = routes
-
-                st.success(
-                    f"{len(routes)} route(s) found."
+                st.error(
+                    "Google Routes API key "
+                    "is not configured."
                 )
 
             else:
 
-                st.error(
-                    "Could not calculate route."
-                )
+                with st.spinner(
+                    "Calculating traffic-aware route..."
+                ):
 
-        else:
+                    result = get_google_routes(
+                        st.session_state.current_lat,
+                        st.session_state.current_lon,
+                        st.session_state.search_lat,
+                        st.session_state.search_lon,
+                    )
 
-            st.warning(
-                "Allow location access and search "
-                "for a destination first."
-            )
+                if result.get("error"):
+
+                    st.error(
+                        result["error"]
+                    )
+
+                else:
+
+                    st.session_state.routes = (
+                        result["routes"]
+                    )
+
+                    if st.session_state.routes:
+
+                        st.success(
+                            f"{len(st.session_state.routes)} "
+                            "route(s) found."
+                        )
+
+                    else:
+
+                        st.warning(
+                            "No route found."
+                        )
 
     st.divider()
 
@@ -587,7 +953,9 @@ with st.sidebar:
         ],
     )
 
-    st.session_state.map_style = map_style
+    st.session_state.map_style = (
+        map_style
+    )
 
     st.divider()
 
@@ -651,23 +1019,32 @@ with st.sidebar:
 
 if st.session_state.search_lat is not None:
 
-    center_lat = st.session_state.search_lat
-    center_lon = st.session_state.search_lon
+    center_lat = (
+        st.session_state.search_lat
+    )
+
+    center_lon = (
+        st.session_state.search_lon
+    )
 
 elif st.session_state.current_lat is not None:
 
-    center_lat = st.session_state.current_lat
-    center_lon = st.session_state.current_lon
+    center_lat = (
+        st.session_state.current_lat
+    )
+
+    center_lon = (
+        st.session_state.current_lon
+    )
 
 else:
 
-    # Princeton Junction
     center_lat = 40.3173
     center_lon = -74.6199
 
 
 # ============================================================
-# MAP
+# CREATE MAP
 # ============================================================
 
 m = folium.Map(
@@ -682,7 +1059,7 @@ m = folium.Map(
 
 
 # ============================================================
-# TILE LAYER
+# MAP TILE
 # ============================================================
 
 folium.TileLayer(
@@ -692,7 +1069,7 @@ folium.TileLayer(
 
 
 # ============================================================
-# CURRENT LOCATION MARKER
+# CURRENT LOCATION
 # ============================================================
 
 if (
@@ -706,7 +1083,7 @@ if (
             st.session_state.current_lon,
         ],
         tooltip="📍 You are here",
-        popup="📍 Your current location",
+        popup="Your current location",
         icon=folium.Icon(
             color="blue",
             icon="user",
@@ -716,7 +1093,7 @@ if (
 
 
 # ============================================================
-# DESTINATION MARKER
+# DESTINATION
 # ============================================================
 
 if st.session_state.search_lat is not None:
@@ -737,7 +1114,7 @@ if st.session_state.search_lat is not None:
 
 
 # ============================================================
-# NEARBY MARKERS
+# NEARBY PLACES
 # ============================================================
 
 for place in st.session_state.nearby_places:
@@ -761,34 +1138,38 @@ for place in st.session_state.nearby_places:
 
 
 # ============================================================
-# ROUTES
+# DRAW GOOGLE ROUTES
 # ============================================================
 
-if st.session_state.route:
+if st.session_state.routes:
 
-    routes = st.session_state.route
+    for index, route in enumerate(
+        st.session_state.routes
+    ):
 
-    # Draw all available routes
-    for index, route in enumerate(routes):
+        geometry = route["geometry"]
 
-        route_points = [
-            [
-                coordinate[1],
-                coordinate[0],
-            ]
-            for coordinate in route["geometry"]
-        ]
+        if not geometry:
+            continue
 
-        # Main route is thicker
-        weight = 7 if index == 0 else 4
+        # Main route
+        if index == 0:
 
-        opacity = 0.9 if index == 0 else 0.45
+            route_color = "#4285F4"
+            route_weight = 8
+            route_opacity = 0.90
+
+        else:
+
+            route_color = "#7b8794"
+            route_weight = 5
+            route_opacity = 0.55
 
         folium.PolyLine(
-            route_points,
-            color="#4285F4",
-            weight=weight,
-            opacity=opacity,
+            geometry,
+            color=route_color,
+            weight=route_weight,
+            opacity=route_opacity,
             tooltip=(
                 "Recommended route"
                 if index == 0
@@ -796,22 +1177,16 @@ if st.session_state.route:
             ),
         ).add_to(m)
 
-    # Fit map to main route
+    # Fit to recommended route
 
-    main_route = routes[0]
+    main_geometry = (
+        st.session_state.routes[0]["geometry"]
+    )
 
-    main_points = [
-        [
-            coordinate[1],
-            coordinate[0],
-        ]
-        for coordinate in main_route["geometry"]
-    ]
-
-    if main_points:
+    if main_geometry:
 
         m.fit_bounds(
-            main_points
+            main_geometry
         )
 
 
@@ -855,96 +1230,137 @@ if map_data:
 
 
 # ============================================================
-# ROUTE / ETA SECTION
+# TRAFFIC ETA
 # ============================================================
 
-if st.session_state.route:
+if st.session_state.routes:
 
-    routes = st.session_state.route
+    main_route = (
+        st.session_state.routes[0]
+    )
 
-    main_route = routes[0]
+    traffic_minutes = (
+        main_route[
+            "traffic_minutes"
+        ]
+    )
 
-    duration = main_route[
-        "duration_minutes"
-    ]
+    normal_minutes = (
+        main_route[
+            "normal_minutes"
+        ]
+    )
 
-    distance_miles = main_route[
-        "distance_miles"
-    ]
+    delay_minutes = (
+        main_route[
+            "traffic_delay_minutes"
+        ]
+    )
 
-    distance_km = main_route[
-        "distance_km"
-    ]
+    distance_miles = (
+        main_route[
+            "distance_miles"
+        ]
+    )
+
+    distance_km = (
+        main_route[
+            "distance_km"
+        ]
+    )
 
     # --------------------------------------------------------
     # Destination timezone
     # --------------------------------------------------------
 
-    destination_lat = (
-        st.session_state.search_lat
+    destination_timezone = (
+        get_timezone(
+            st.session_state.search_lat,
+            st.session_state.search_lon,
+        )
     )
 
-    destination_lon = (
-        st.session_state.search_lon
-    )
-
-    timezone_name = get_timezone(
-        destination_lat,
-        destination_lon,
-    )
-
-    if timezone_name:
+    if destination_timezone:
 
         try:
 
-            destination_now = datetime.now(
-                ZoneInfo(timezone_name)
+            now_destination = datetime.now(
+                ZoneInfo(
+                    destination_timezone
+                )
             )
 
         except Exception:
 
-            destination_now = datetime.now()
+            now_destination = datetime.now()
 
     else:
 
-        destination_now = datetime.now()
+        now_destination = datetime.now()
 
     # --------------------------------------------------------
-    # Calculate ETA
+    # ETA
     # --------------------------------------------------------
 
-    from datetime import timedelta
-
-    eta = destination_now + timedelta(
-        minutes=duration
+    eta = (
+        now_destination
+        + timedelta(
+            minutes=traffic_minutes
+        )
     )
 
     # --------------------------------------------------------
-    # Format duration
+    # Duration text
     # --------------------------------------------------------
 
-    if duration < 60:
+    if traffic_minutes < 60:
 
-        duration_text = (
-            f"{duration:.0f} min"
+        traffic_text = (
+            f"{traffic_minutes:.0f} min"
         )
 
     else:
 
         hours = int(
-            duration // 60
+            traffic_minutes // 60
         )
 
         minutes = int(
-            duration % 60
+            traffic_minutes % 60
         )
 
-        duration_text = (
+        traffic_text = (
             f"{hours}h {minutes}m"
         )
 
+    if normal_minutes < 60:
+
+        normal_text = (
+            f"{normal_minutes:.0f} min"
+        )
+
+    else:
+
+        hours = int(
+            normal_minutes // 60
+        )
+
+        minutes = int(
+            normal_minutes % 60
+        )
+
+        normal_text = (
+            f"{hours}h {minutes}m"
+        )
+
+    traffic_text_label, _ = (
+        traffic_label(
+            delay_minutes
+        )
+    )
+
     # --------------------------------------------------------
-    # ETA card
+    # ETA CARD
     # --------------------------------------------------------
 
     st.markdown(
@@ -952,7 +1368,7 @@ if st.session_state.route:
         <div class="eta-card">
 
             <div class="eta-label">
-                🚗 ESTIMATED ARRIVAL
+                🚗 TRAFFIC-AWARE ETA
             </div>
 
             <div class="eta-time">
@@ -971,10 +1387,12 @@ if st.session_state.route:
     st.write("")
 
     # --------------------------------------------------------
-    # Route metrics
+    # METRICS
     # --------------------------------------------------------
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4 = (
+        st.columns(4)
+    )
 
     with col1:
 
@@ -986,36 +1404,68 @@ if st.session_state.route:
     with col2:
 
         st.metric(
-            "🌎 Distance",
-            f"{distance_km:.1f} km",
+            "🚗 Traffic ETA",
+            traffic_text,
         )
 
     with col3:
 
         st.metric(
-            "⏱️ Travel Time",
-            duration_text,
+            "🕐 Arrival",
+            eta.strftime(
+                "%I:%M %p"
+            ),
         )
 
     with col4:
 
         st.metric(
-            "🕐 ETA",
-            eta.strftime("%I:%M %p"),
+            "🚦 Traffic Delay",
+            f"+{delay_minutes:.0f} min",
         )
 
-    if timezone_name:
+    # --------------------------------------------------------
+    # TRAFFIC CARD
+    # --------------------------------------------------------
+
+    st.markdown(
+        f"""
+        <div class="traffic-card">
+
+        <h3>{traffic_text_label}</h3>
+
+        <b>Traffic-aware travel time:</b>
+        {traffic_text}
+
+        <br>
+
+        <b>Normal estimated time:</b>
+        {normal_text}
+
+        <br>
+
+        <b>Estimated traffic delay:</b>
+        +{delay_minutes:.0f} minutes
+
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if destination_timezone:
 
         st.caption(
-            f"🕐 Destination timezone: "
-            f"{timezone_name}"
+            "🕐 Destination timezone: "
+            f"{destination_timezone}"
         )
 
     # --------------------------------------------------------
-    # Route comparison
+    # ALTERNATIVE ROUTES
     # --------------------------------------------------------
 
-    if len(routes) > 1:
+    if len(
+        st.session_state.routes
+    ) > 1:
 
         st.divider()
 
@@ -1024,42 +1474,79 @@ if st.session_state.route:
         )
 
         for index, route in enumerate(
-            routes
+            st.session_state.routes
         ):
 
-            route_duration = route[
-                "duration_minutes"
-            ]
+            route_minutes = (
+                route[
+                    "traffic_minutes"
+                ]
+            )
 
-            if route_duration < 60:
+            route_delay = (
+                route[
+                    "traffic_delay_minutes"
+                ]
+            )
+
+            if route_minutes < 60:
 
                 route_time = (
-                    f"{route_duration:.0f} min"
+                    f"{route_minutes:.0f} min"
                 )
 
             else:
 
-                h = int(
-                    route_duration // 60
+                hours = int(
+                    route_minutes // 60
                 )
 
                 mins = int(
-                    route_duration % 60
+                    route_minutes % 60
                 )
 
                 route_time = (
-                    f"{h}h {mins}m"
+                    f"{hours}h {mins}m"
                 )
 
-            st.write(
-                f"**Route {index + 1}:** "
-                f"{route_time} • "
-                f"{route['distance_miles']:.1f} mi"
+            label = (
+                "⭐ Recommended"
+                if index == 0
+                else f"Route {index + 1}"
+            )
+
+            traffic_label_text, _ = (
+                traffic_label(
+                    route_delay
+                )
+            )
+
+            st.markdown(
+                f"""
+                <div class="route-card">
+
+                <b>{label}</b>
+
+                <br><br>
+
+                🚗 {route_time}
+
+                &nbsp;&nbsp;•&nbsp;&nbsp;
+
+                📏 {route['distance_miles']:.1f} mi
+
+                <br>
+
+                {traffic_label_text}
+
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
 
 # ============================================================
-# SELECTED LOCATION
+# SELECTED MAP LOCATION
 # ============================================================
 
 if st.session_state.map_click:
@@ -1115,7 +1602,7 @@ if st.session_state.map_click:
 
 
 # ============================================================
-# DESTINATION
+# SAVE DESTINATION
 # ============================================================
 
 if st.session_state.search_address:
@@ -1146,9 +1633,13 @@ if st.session_state.search_address:
         }
 
         already_saved = any(
-            p["lat"] == favorite["lat"]
-            and p["lon"] == favorite["lon"]
-            for p in st.session_state.favorites
+            place["lat"]
+            == favorite["lat"]
+            and
+            place["lon"]
+            == favorite["lon"]
+            for place
+            in st.session_state.favorites
         )
 
         if not already_saved:
@@ -1158,13 +1649,13 @@ if st.session_state.search_address:
             )
 
             st.success(
-                "Saved!"
+                "Place saved!"
             )
 
         else:
 
             st.info(
-                "Already saved."
+                "This place is already saved."
             )
 
 
@@ -1220,16 +1711,22 @@ if st.session_state.nearby_places:
         "🏪 Nearby Places"
     )
 
-    for place in st.session_state.nearby_places[:20]:
+    for place in (
+        st.session_state.nearby_places[:20]
+    ):
 
         st.markdown(
             f"""
             <div class="place-card">
+
                 <b>📍 {place['name']}</b>
+
                 <br>
+
                 <span style="color:#687080;">
                     {place['type']}
                 </span>
+
             </div>
             """,
             unsafe_allow_html=True,
@@ -1243,8 +1740,8 @@ if st.session_state.nearby_places:
 st.divider()
 
 st.caption(
-    "🗺️ Map Explorer V3 • "
+    "🗺️ Map Explorer V4 • "
+    "Traffic routing by Google Routes API • "
     "Map data © OpenStreetMap contributors • "
-    "Geocoding by Nominatim • "
-    "Routing by OSRM"
+    "Geocoding by Nominatim"
 )
