@@ -1,3 +1,4 @@
+```txt
 streamlit
 folium
 streamlit-folium
@@ -5,3 +6,5 @@ streamlit-geolocation
 geopy
 requests
 timezonefinder
+streamlit-autorefresh
+```
