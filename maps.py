@@ -1,4 +1,5 @@
 import math
+
 import streamlit as st
 import requests
 import folium
@@ -179,7 +180,7 @@ if st.session_state.routes:
 
 
 # ============================================================
-# DISTANCE HELPER (HAVERSINE)
+# DISTANCE HELPER
 # ============================================================
 
 def haversine_miles(lat1, lon1, lat2, lon2):
@@ -208,7 +209,8 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
-# SEARCH (MULTI-RESULT, PROXIMITY SORTED)
+# SEARCH (returns up to `limit` candidates, ranked by
+# distance from the origin if one is provided)
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -216,7 +218,7 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     try:
 
-        # Pull extra candidates so we have enough to
+        # Pull extra candidates so there's enough to
         # re-rank by distance before trimming to `limit`.
         locations = geolocator.geocode(
             query,
