@@ -1,190 +1,216 @@
 import streamlit as st
 import requests
 import folium
-from streamlit_folium import st_folium
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-from streamlit_geolocation import streamlit_geolocation
 
-# ---------------------------------------------------------
+from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
+from geopy.geocoders import Nominatim
+
+
+# ============================================================
 # PAGE CONFIG
-# ---------------------------------------------------------
+# ============================================================
 
 st.set_page_config(
     page_title="Map Explorer",
     page_icon="🗺️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------
-# CUSTOM CSS
-# ---------------------------------------------------------
+
+# ============================================================
+# CSS
+# ============================================================
 
 st.markdown(
     """
     <style>
-        .stApp {
-            background: #f5f7fa;
-        }
 
-        .main-title {
-            font-size: 42px;
-            font-weight: 800;
-            margin-bottom: 0;
-        }
+    .stApp {
+        background: #f5f7fb;
+    }
 
-        .subtitle {
-            color: #666;
-            font-size: 17px;
-            margin-bottom: 25px;
-        }
+    .title {
+        font-size: 42px;
+        font-weight: 800;
+        margin-bottom: 0;
+    }
 
-        .info-card {
-            background: white;
-            padding: 18px;
-            border-radius: 14px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            margin-bottom: 12px;
-        }
+    .subtitle {
+        color: #687080;
+        font-size: 17px;
+        margin-bottom: 20px;
+    }
 
-        .big-number {
-            font-size: 28px;
-            font-weight: 700;
-        }
+    .search-box {
+        background: white;
+        padding: 18px;
+        border-radius: 16px;
+        box-shadow: 0 3px 15px rgba(0,0,0,0.08);
+        margin-bottom: 15px;
+    }
 
-        .small-label {
-            color: #777;
-            font-size: 13px;
-        }
+    .map-card {
+        background: white;
+        padding: 8px;
+        border-radius: 16px;
+        box-shadow: 0 3px 15px rgba(0,0,0,0.08);
+    }
 
-        div[data-testid="stMetric"] {
-            background: white;
-            padding: 12px;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-        }
+    .place-card {
+        background: white;
+        padding: 16px;
+        border-radius: 14px;
+        margin-bottom: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    }
+
+    .small-text {
+        color: #6b7280;
+        font-size: 13px;
+    }
+
+    div[data-testid="stMetric"] {
+        background: white;
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------
+
+# ============================================================
 # SESSION STATE
-# ---------------------------------------------------------
+# ============================================================
 
-if "search_location" not in st.session_state:
-    st.session_state.search_location = None
+defaults = {
+    "current_lat": None,
+    "current_lon": None,
+    "search_lat": None,
+    "search_lon": None,
+    "search_address": None,
+    "route": None,
+    "favorites": [],
+    "map_click": None,
+    "nearby_places": [],
+    "map_style": "OpenStreetMap",
+    "travel_mode": "driving",
+}
 
-if "search_lat" not in st.session_state:
-    st.session_state.search_lat = None
+for key, value in defaults.items():
 
-if "search_lon" not in st.session_state:
-    st.session_state.search_lon = None
-
-if "search_address" not in st.session_state:
-    st.session_state.search_address = None
-
-if "current_lat" not in st.session_state:
-    st.session_state.current_lat = None
-
-if "current_lon" not in st.session_state:
-    st.session_state.current_lon = None
-
-if "route_data" not in st.session_state:
-    st.session_state.route_data = None
-
-if "map_click" not in st.session_state:
-    st.session_state.map_click = None
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
-# ---------------------------------------------------------
-# GEOCODER
-# ---------------------------------------------------------
+# ============================================================
+# SERVICES
+# ============================================================
 
 geolocator = Nominatim(
-    user_agent="map-explorer-streamlit-app"
+    user_agent="map-explorer-v2"
 )
 
 
-def search_place(query):
-    """Search an address/place using OpenStreetMap Nominatim."""
+# ============================================================
+# SEARCH
+# ============================================================
 
-    if not query or not query.strip():
-        return None
+def search_place(query):
 
     try:
+
         location = geolocator.geocode(
             query,
             timeout=10,
-            addressdetails=True
+            addressdetails=True,
+            exactly_one=True,
         )
 
         if location:
+
             return {
-                "latitude": location.latitude,
-                "longitude": location.longitude,
-                "address": location.address
+                "lat": location.latitude,
+                "lon": location.longitude,
+                "address": location.address,
             }
 
-    except (GeocoderTimedOut, GeocoderServiceError):
-        return None
     except Exception:
-        return None
+        pass
 
     return None
 
 
+# ============================================================
+# REVERSE GEOCODING
+# ============================================================
+
 def reverse_geocode(lat, lon):
-    """Convert coordinates into an address."""
 
     try:
+
         location = geolocator.reverse(
             (lat, lon),
             timeout=10,
-            addressdetails=True
+            addressdetails=True,
         )
 
         if location:
             return location.address
 
     except Exception:
-        return None
+        pass
 
     return None
 
 
-# ---------------------------------------------------------
+# ============================================================
 # ROUTING
-# ---------------------------------------------------------
+# ============================================================
 
-def get_route(start_lat, start_lon, end_lat, end_lon):
-    """
-    Get a driving route from OSRM.
+def get_route(
+    start_lat,
+    start_lon,
+    end_lat,
+    end_lon,
+    mode,
+):
 
-    OSRM coordinates use:
-    longitude,latitude
-    """
+    profile_map = {
+        "driving": "driving",
+        "walking": "foot",
+        "cycling": "bike",
+    }
+
+    profile = profile_map.get(
+        mode,
+        "driving",
+    )
 
     url = (
-        f"https://router.project-osrm.org/route/v1/driving/"
-        f"{start_lon},{start_lat};{end_lon},{end_lat}"
+        f"https://router.project-osrm.org/"
+        f"route/v1/{profile}/"
+        f"{start_lon},{start_lat};"
+        f"{end_lon},{end_lat}"
     )
 
     params = {
         "overview": "full",
         "geometries": "geojson",
-        "steps": "false"
     }
 
     try:
+
         response = requests.get(
             url,
             params=params,
-            timeout=20
+            timeout=20,
         )
-
-        response.raise_for_status()
 
         data = response.json()
 
@@ -194,311 +220,451 @@ def get_route(start_lat, start_lon, end_lat, end_lon):
         route = data["routes"][0]
 
         return {
-            "distance_miles": route["distance"] / 1609.344,
-            "distance_km": route["distance"] / 1000,
-            "duration_minutes": route["duration"] / 60,
-            "geometry": route["geometry"]["coordinates"]
+            "distance_miles":
+                route["distance"] / 1609.344,
+
+            "distance_km":
+                route["distance"] / 1000,
+
+            "duration_minutes":
+                route["duration"] / 60,
+
+            "geometry":
+                route["geometry"]["coordinates"],
         }
 
     except Exception:
+
         return None
 
 
-# ---------------------------------------------------------
+# ============================================================
+# NEARBY PLACES
+# ============================================================
+
+def get_nearby_places(lat, lon, category):
+
+    queries = {
+
+        "🍕 Restaurants": "amenity=restaurant",
+
+        "☕ Cafes": "amenity=cafe",
+
+        "⛽ Gas Stations": "amenity=fuel",
+
+        "🏥 Hospitals": "amenity=hospital",
+
+        "🏨 Hotels": "tourism=hotel",
+
+        "🛒 Shops": "shop",
+
+        "🏫 Schools": "amenity=school",
+
+        "🏦 Banks": "amenity=bank",
+    }
+
+    query = queries.get(
+        category,
+        "amenity=restaurant",
+    )
+
+    overpass_query = f"""
+    [out:json];
+    (
+      node[{query}](around:5000,{lat},{lon});
+      way[{query}](around:5000,{lat},{lon});
+    );
+    out center;
+    """
+
+    try:
+
+        response = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data=overpass_query,
+            timeout=30,
+        )
+
+        data = response.json()
+
+        places = []
+
+        for element in data.get("elements", []):
+
+            tags = element.get("tags", {})
+
+            if element["type"] == "node":
+
+                place_lat = element.get("lat")
+                place_lon = element.get("lon")
+
+            else:
+
+                center = element.get("center", {})
+
+                place_lat = center.get("lat")
+                place_lon = center.get("lon")
+
+            if place_lat is None or place_lon is None:
+                continue
+
+            name = tags.get(
+                "name",
+                "Unnamed place",
+            )
+
+            places.append(
+                {
+                    "name": name,
+                    "lat": place_lat,
+                    "lon": place_lon,
+                    "type": category,
+                }
+            )
+
+        return places[:40]
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
 # HEADER
-# ---------------------------------------------------------
+# ============================================================
 
 st.markdown(
-    '<div class="main-title">🗺️ Map Explorer</div>',
-    unsafe_allow_html=True
+    '<div class="title">🗺️ Map Explorer</div>',
+    unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="subtitle">'
-    "Explore places, search locations, find your position, and get directions."
+    "Search places, explore nearby locations, and get directions."
     "</div>",
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # SIDEBAR
-# ---------------------------------------------------------
+# ============================================================
 
 with st.sidebar:
 
     st.header("🔎 Search")
 
     search_query = st.text_input(
-        "Search for a place",
-        placeholder="Princeton Junction, NJ..."
+        "Where do you want to go?",
+        placeholder="New York City...",
     )
 
-    search_button = st.button(
+    if st.button(
         "🔍 Search",
-        use_container_width=True
-    )
+        use_container_width=True,
+    ):
+
+        if search_query.strip():
+
+            with st.spinner("Searching..."):
+
+                result = search_place(
+                    search_query
+                )
+
+            if result:
+
+                st.session_state.search_lat = result["lat"]
+                st.session_state.search_lon = result["lon"]
+                st.session_state.search_address = result["address"]
+
+                st.session_state.route = None
+
+                st.success("Location found!")
+
+            else:
+
+                st.error(
+                    "Location not found."
+                )
 
     st.divider()
 
-    st.header("📍 Your Location")
+    st.header("📍 Location")
 
-    location_data = streamlit_geolocation()
+    location = streamlit_geolocation()
 
-    if location_data:
+    if location:
 
-        latitude = location_data.get("latitude")
-        longitude = location_data.get("longitude")
+        lat = location.get("latitude")
+        lon = location.get("longitude")
 
-        if latitude is not None and longitude is not None:
+        if lat is not None and lon is not None:
 
-            st.session_state.current_lat = latitude
-            st.session_state.current_lon = longitude
+            st.session_state.current_lat = lat
+            st.session_state.current_lon = lon
 
-            st.success("Location found!")
-
-            st.caption(
-                f"Latitude: {latitude:.6f}"
+            st.success(
+                "Current location detected."
             )
-
-            st.caption(
-                f"Longitude: {longitude:.6f}"
-            )
-
-    else:
-        st.info(
-            "Click the location button above to allow "
-            "your browser to share your location."
-        )
 
     st.divider()
 
     st.header("🧭 Directions")
 
-    start_option = st.radio(
-        "Starting point",
+    travel_mode = st.radio(
+        "Travel mode",
         [
-            "My Location",
-            "Search Result"
-        ]
+            "🚗 Driving",
+            "🚶 Walking",
+            "🚴 Cycling",
+        ],
     )
 
-    if st.session_state.search_address:
-        st.caption(
-            f"Destination: {st.session_state.search_address}"
-        )
-    else:
-        st.caption(
-            "Search for a destination first."
-        )
+    if travel_mode.startswith("🚗"):
+        st.session_state.travel_mode = "driving"
 
-
-# ---------------------------------------------------------
-# SEARCH
-# ---------------------------------------------------------
-
-if search_button:
-
-    if not search_query.strip():
-
-        st.warning(
-            "Please enter a place to search."
-        )
+    elif travel_mode.startswith("🚶"):
+        st.session_state.travel_mode = "walking"
 
     else:
+        st.session_state.travel_mode = "cycling"
 
-        with st.spinner("Searching..."):
+    if st.button(
+        "🛣️ Get Directions",
+        use_container_width=True,
+    ):
 
-            result = search_place(search_query)
+        if (
+            st.session_state.current_lat is not None
+            and st.session_state.search_lat is not None
+        ):
 
-        if result:
+            with st.spinner(
+                "Calculating route..."
+            ):
 
-            st.session_state.search_location = result
-            st.session_state.search_lat = result["latitude"]
-            st.session_state.search_lon = result["longitude"]
-            st.session_state.search_address = result["address"]
-            st.session_state.route_data = None
+                route = get_route(
+                    st.session_state.current_lat,
+                    st.session_state.current_lon,
+                    st.session_state.search_lat,
+                    st.session_state.search_lon,
+                    st.session_state.travel_mode,
+                )
 
-            st.success(
-                f"Found: {result['address']}"
-            )
+            if route:
+
+                st.session_state.route = route
+
+            else:
+
+                st.error(
+                    "Could not calculate route."
+                )
 
         else:
 
-            st.error(
-                "I couldn't find that location. "
-                "Try a more specific address or city."
+            st.warning(
+                "You need your current location "
+                "and a destination."
+            )
+
+    st.divider()
+
+    st.header("🗺️ Map Style")
+
+    map_style = st.selectbox(
+        "Choose map",
+        [
+            "OpenStreetMap",
+            "CartoDB positron",
+            "CartoDB dark_matter",
+        ],
+    )
+
+    st.session_state.map_style = map_style
+
+    st.divider()
+
+    st.header("🏪 Explore Nearby")
+
+    nearby_category = st.selectbox(
+        "Find nearby",
+        [
+            "🍕 Restaurants",
+            "☕ Cafes",
+            "⛽ Gas Stations",
+            "🏥 Hospitals",
+            "🏨 Hotels",
+            "🛒 Shops",
+            "🏫 Schools",
+            "🏦 Banks",
+        ],
+    )
+
+    if st.button(
+        "🔎 Find Nearby",
+        use_container_width=True,
+    ):
+
+        target_lat = (
+            st.session_state.current_lat
+            or st.session_state.search_lat
+        )
+
+        target_lon = (
+            st.session_state.current_lon
+            or st.session_state.search_lon
+        )
+
+        if target_lat is not None:
+
+            with st.spinner(
+                "Finding nearby places..."
+            ):
+
+                st.session_state.nearby_places = (
+                    get_nearby_places(
+                        target_lat,
+                        target_lon,
+                        nearby_category,
+                    )
+                )
+
+        else:
+
+            st.warning(
+                "Search for a location first."
             )
 
 
-# ---------------------------------------------------------
-# DEFAULT MAP LOCATION
-# ---------------------------------------------------------
+# ============================================================
+# DETERMINE MAP CENTER
+# ============================================================
 
-if st.session_state.current_lat is not None:
+if st.session_state.search_lat is not None:
 
-    default_lat = st.session_state.current_lat
-    default_lon = st.session_state.current_lon
+    center_lat = st.session_state.search_lat
+    center_lon = st.session_state.search_lon
 
-elif st.session_state.search_lat is not None:
+elif st.session_state.current_lat is not None:
 
-    default_lat = st.session_state.search_lat
-    default_lon = st.session_state.search_lon
+    center_lat = st.session_state.current_lat
+    center_lon = st.session_state.current_lon
 
 else:
 
-    # Default location: Princeton Junction, NJ
-    default_lat = 40.3173
-    default_lon = -74.6199
+    center_lat = 40.3173
+    center_lon = -74.6199
 
 
-# ---------------------------------------------------------
-# MAP
-# ---------------------------------------------------------
+# ============================================================
+# CREATE MAP
+# ============================================================
 
-map_object = folium.Map(
+m = folium.Map(
     location=[
-        default_lat,
-        default_lon
+        center_lat,
+        center_lon,
     ],
     zoom_start=13,
     control_scale=True,
-    tiles="OpenStreetMap"
+    tiles=None,
 )
 
 
-# ---------------------------------------------------------
-# MAP LAYERS
-# ---------------------------------------------------------
+# ============================================================
+# MAP TILE
+# ============================================================
 
 folium.TileLayer(
-    "OpenStreetMap",
-    name="Street Map"
-).add_to(map_object)
-
-folium.TileLayer(
-    "CartoDB positron",
-    name="Light Map"
-).add_to(map_object)
-
-folium.TileLayer(
-    "CartoDB dark_matter",
-    name="Dark Map"
-).add_to(map_object)
+    st.session_state.map_style,
+    name="Map",
+).add_to(m)
 
 
-# ---------------------------------------------------------
-# CURRENT LOCATION MARKER
-# ---------------------------------------------------------
+# ============================================================
+# CURRENT LOCATION
+# ============================================================
 
 if (
     st.session_state.current_lat is not None
     and st.session_state.current_lon is not None
 ):
 
-    current_popup = folium.Popup(
-        "<b>📍 Your Location</b>",
-        max_width=250
-    )
-
     folium.Marker(
-        location=[
+        [
             st.session_state.current_lat,
-            st.session_state.current_lon
+            st.session_state.current_lon,
         ],
-        popup=current_popup,
-        tooltip="Your Location",
+        tooltip="📍 You are here",
+        popup="📍 Your current location",
         icon=folium.Icon(
             color="blue",
             icon="user",
-            prefix="fa"
-        )
-    ).add_to(map_object)
+            prefix="fa",
+        ),
+    ).add_to(m)
 
 
-# ---------------------------------------------------------
-# SEARCH RESULT MARKER
-# ---------------------------------------------------------
+# ============================================================
+# DESTINATION
+# ============================================================
 
 if st.session_state.search_lat is not None:
 
     folium.Marker(
-        location=[
+        [
             st.session_state.search_lat,
-            st.session_state.search_lon
+            st.session_state.search_lon,
         ],
-        popup=folium.Popup(
-            f"<b>📍 Destination</b><br>"
-            f"{st.session_state.search_address}",
-            max_width=350
-        ),
-        tooltip="Destination",
+        tooltip="📍 Destination",
+        popup=st.session_state.search_address,
         icon=folium.Icon(
             color="red",
             icon="flag",
-            prefix="fa"
-        )
-    ).add_to(map_object)
+            prefix="fa",
+        ),
+    ).add_to(m)
 
 
-# ---------------------------------------------------------
+# ============================================================
+# NEARBY PLACES
+# ============================================================
+
+for place in st.session_state.nearby_places:
+
+    folium.Marker(
+        [
+            place["lat"],
+            place["lon"],
+        ],
+        tooltip=place["name"],
+        popup=(
+            f"<b>{place['name']}</b>"
+            f"<br>{place['type']}"
+        ),
+        icon=folium.Icon(
+            color="green",
+            icon="map-marker",
+            prefix="fa",
+        ),
+    ).add_to(m)
+
+
+# ============================================================
 # ROUTE
-# ---------------------------------------------------------
+# ============================================================
 
-if (
-    st.session_state.search_lat is not None
-    and st.session_state.search_lon is not None
-):
+if st.session_state.route:
 
-    if start_option == "My Location":
-
-        route_start_lat = st.session_state.current_lat
-        route_start_lon = st.session_state.current_lon
-
-    else:
-
-        route_start_lat = default_lat
-        route_start_lon = default_lon
-
-    if route_start_lat is not None and route_start_lon is not None:
-
-        route_button = st.button(
-            "🚗 Get Directions",
-            use_container_width=True
-        )
-
-        if route_button:
-
-            with st.spinner("Calculating route..."):
-
-                route = get_route(
-                    route_start_lat,
-                    route_start_lon,
-                    st.session_state.search_lat,
-                    st.session_state.search_lon
-                )
-
-            if route:
-
-                st.session_state.route_data = route
-
-            else:
-
-                st.error(
-                    "Could not calculate a route."
-                )
-
-
-# ---------------------------------------------------------
-# DRAW ROUTE
-# ---------------------------------------------------------
-
-if st.session_state.route_data:
-
-    route = st.session_state.route_data
+    route = st.session_state.route
 
     route_points = [
-        [coordinate[1], coordinate[0]]
+        [
+            coordinate[1],
+            coordinate[0],
+        ]
         for coordinate in route["geometry"]
     ]
 
@@ -507,70 +673,70 @@ if st.session_state.route_data:
         color="#4285F4",
         weight=7,
         opacity=0.85,
-        tooltip="Driving Route"
-    ).add_to(map_object)
+        tooltip="Route",
+    ).add_to(m)
 
-    # Fit map to route
+    if route_points:
 
-    map_object.fit_bounds(
-        [
-            [
-                route_points[0][0],
-                route_points[0][1]
-            ],
-            [
-                route_points[-1][0],
-                route_points[-1][1]
-            ]
-        ]
-    )
+        m.fit_bounds(
+            route_points
+        )
 
 
-# ---------------------------------------------------------
-# CLICK MAP
-# ---------------------------------------------------------
+# ============================================================
+# MAP CONTROLS
+# ============================================================
 
-folium.LayerControl().add_to(map_object)
+folium.LayerControl().add_to(m)
 
 
-map_result = st_folium(
-    map_object,
+# ============================================================
+# DISPLAY MAP
+# ============================================================
+
+map_data = st_folium(
+    m,
     width=None,
     height=650,
     returned_objects=[
-        "last_clicked"
-    ]
+        "last_clicked",
+    ],
 )
 
 
-# ---------------------------------------------------------
-# MAP CLICK INFORMATION
-# ---------------------------------------------------------
+# ============================================================
+# MAP CLICK
+# ============================================================
 
-if map_result and map_result.get("last_clicked"):
+if map_data:
 
-    clicked = map_result["last_clicked"]
-
-    clicked_lat = clicked["lat"]
-    clicked_lon = clicked["lng"]
-
-    st.session_state.map_click = (
-        clicked_lat,
-        clicked_lon
+    clicked = map_data.get(
+        "last_clicked"
     )
 
+    if clicked:
 
-# ---------------------------------------------------------
+        st.session_state.map_click = (
+            clicked["lat"],
+            clicked["lng"],
+        )
+
+
+# ============================================================
 # CLICKED LOCATION
-# ---------------------------------------------------------
+# ============================================================
 
 if st.session_state.map_click:
 
-    clicked_lat, clicked_lon = st.session_state.map_click
+    clicked_lat, clicked_lon = (
+        st.session_state.map_click
+    )
 
     st.divider()
 
-    st.subheader("📌 Selected Location")
+    st.subheader(
+        "📌 Selected Location"
+    )
 
     col1, col2 = st.columns(2)
 
@@ -578,23 +744,27 @@ if st.session_state.map_click:
 
         st.metric(
             "Latitude",
-            f"{clicked_lat:.6f}"
+            f"{clicked_lat:.6f}",
         )
 
     with col2:
 
         st.metric(
             "Longitude",
-            f"{clicked_lon:.6f}"
+            f"{clicked_lon:.6f}",
         )
 
-    if st.button("📍 Find Address"):
+    if st.button(
+        "📍 Get Address",
+    ):
 
-        with st.spinner("Finding address..."):
+        with st.spinner(
+            "Finding address..."
+        ):
 
             address = reverse_geocode(
                 clicked_lat,
-                clicked_lon
+                clicked_lon,
             )
 
         if address:
@@ -604,52 +774,23 @@ if st.session_state.map_click:
         else:
 
             st.warning(
-                "No address was found for this location."
+                "Address not found."
             )
 
 
-# ---------------------------------------------------------
-# SEARCH RESULT INFORMATION
-# ---------------------------------------------------------
-
-if st.session_state.search_address:
-
-    st.divider()
-
-    st.subheader("📍 Destination")
-
-    st.write(
-        st.session_state.search_address
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.metric(
-            "Latitude",
-            f"{st.session_state.search_lat:.6f}"
-        )
-
-    with col2:
-
-        st.metric(
-            "Longitude",
-            f"{st.session_state.search_lon:.6f}"
-        )
-
-
-# ---------------------------------------------------------
+# ============================================================
 # ROUTE INFORMATION
-# ---------------------------------------------------------
+# ============================================================
 
-if st.session_state.route_data:
+if st.session_state.route:
 
-    route = st.session_state.route_data
+    route = st.session_state.route
 
     st.divider()
 
-    st.subheader("🚗 Route Information")
+    st.subheader(
+        "🧭 Route Information"
+    )
 
     col1, col2, col3 = st.columns(3)
 
@@ -657,44 +798,169 @@ if st.session_state.route_data:
 
         st.metric(
             "Distance",
-            f"{route['distance_miles']:.1f} mi"
+            f"{route['distance_miles']:.1f} mi",
         )
 
     with col2:
 
         st.metric(
             "Distance",
-            f"{route['distance_km']:.1f} km"
+            f"{route['distance_km']:.1f} km",
         )
 
     with col3:
 
-        minutes = route["duration_minutes"]
+        minutes = route[
+            "duration_minutes"
+        ]
 
         if minutes < 60:
 
-            time_text = f"{minutes:.0f} min"
+            eta = f"{minutes:.0f} min"
 
         else:
 
             hours = int(minutes // 60)
-            remaining = int(minutes % 60)
+            mins = int(minutes % 60)
 
-            time_text = f"{hours}h {remaining}m"
+            eta = f"{hours}h {mins}m"
 
         st.metric(
-            "Estimated Drive",
-            time_text
+            "Estimated Time",
+            eta,
         )
 
 
-# ---------------------------------------------------------
+# ============================================================
+# FAVORITES
+# ============================================================
+
+if st.session_state.search_address:
+
+    st.divider()
+
+    st.subheader(
+        "📍 Destination"
+    )
+
+    st.write(
+        st.session_state.search_address
+    )
+
+    if st.button(
+        "⭐ Save Place",
+    ):
+
+        favorite = {
+            "name":
+                st.session_state.search_address,
+
+            "lat":
+                st.session_state.search_lat,
+
+            "lon":
+                st.session_state.search_lon,
+        }
+
+        already_saved = any(
+            place["lat"] == favorite["lat"]
+            and place["lon"] == favorite["lon"]
+            for place in st.session_state.favorites
+        )
+
+        if not already_saved:
+
+            st.session_state.favorites.append(
+                favorite
+            )
+
+            st.success(
+                "Saved to favorites!"
+            )
+
+        else:
+
+            st.info(
+                "Already saved."
+            )
+
+
+# ============================================================
+# FAVORITES LIST
+# ============================================================
+
+if st.session_state.favorites:
+
+    st.divider()
+
+    st.subheader(
+        "⭐ Saved Places"
+    )
+
+    for index, favorite in enumerate(
+        st.session_state.favorites
+    ):
+
+        col1, col2 = st.columns(
+            [5, 1]
+        )
+
+        with col1:
+
+            st.write(
+                f"📍 {favorite['name']}"
+            )
+
+        with col2:
+
+            if st.button(
+                "✕",
+                key=f"remove_{index}",
+            ):
+
+                st.session_state.favorites.pop(
+                    index
+                )
+
+                st.rerun()
+
+
+# ============================================================
+# NEARBY RESULTS
+# ============================================================
+
+if st.session_state.nearby_places:
+
+    st.divider()
+
+    st.subheader(
+        f"🏪 Nearby {nearby_category}"
+    )
+
+    for place in st.session_state.nearby_places[:20]:
+
+        st.markdown(
+            f"""
+            <div class="place-card">
+                <b>📍 {place['name']}</b>
+                <div class="small-text">
+                    {place['type']}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
 # FOOTER
-# ---------------------------------------------------------
+# ============================================================
 
 st.divider()
 
 st.caption(
-    "🗺️ Map Explorer • Maps © OpenStreetMap contributors "
-    "• Geocoding by Nominatim • Routing by OSRM"
+    "🗺️ Map Explorer V2 • "
+    "Map data © OpenStreetMap contributors • "
+    "Geocoding by Nominatim • "
+    "Routing by OSRM"
 )
