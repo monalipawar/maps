@@ -115,6 +115,18 @@ st.markdown(
         box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     }
 
+    /* Tighten spacing between the location search result buttons */
+    section[data-testid="stSidebar"] div[data-testid="stButton"] {
+        margin-bottom: -14px;
+    }
+
+    section[data-testid="stSidebar"] div[data-testid="stButton"] button {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        min-height: 0;
+        line-height: 1.2;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -225,11 +237,6 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             limit=20,
         )
 
-        # If we know where the user is, bias the search itself
-        # to a box around them (roughly 100 miles / ~1.5 degrees)
-        # so nearby matches actually show up in the candidate
-        # pool, instead of sorting Nominatim's global top hits
-        # (which skew toward "important" listings worldwide).
         if origin_lat is not None and origin_lon is not None:
 
             box_size = 1.5  # degrees, ~ local/regional search
@@ -253,9 +260,6 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             **geocode_kwargs,
         )
 
-        # Fall back to an unbounded global search if the
-        # bounded search comes up empty (e.g. searching for
-        # a place that genuinely isn't nearby).
         if not locations and origin_lat is not None:
 
             locations = geolocator.geocode(
@@ -772,8 +776,8 @@ with st.sidebar:
             if result["distance_miles"] is not None:
 
                 label = (
-                    f"📍 {result['address']} "
-                    f"({result['distance_miles']:.1f} mi)"
+                    f"📍 **{result['distance_miles']:.1f} mi** — "
+                    f"{result['address']}"
                 )
 
             else:
@@ -1225,20 +1229,12 @@ if st.session_state.routes:
         ]
     )
 
-    # --------------------------------------------------------
-    # Destination local time
-    # --------------------------------------------------------
-
     destination_now = (
         get_destination_time(
             st.session_state.search_lat,
             st.session_state.search_lon,
         )
     )
-
-    # --------------------------------------------------------
-    # Automatic ETA
-    # --------------------------------------------------------
 
     eta = (
         destination_now
@@ -1249,10 +1245,6 @@ if st.session_state.routes:
         )
     )
 
-    # --------------------------------------------------------
-    # Format
-    # --------------------------------------------------------
-
     duration_text = format_duration(
         duration_minutes
     )
@@ -1260,10 +1252,6 @@ if st.session_state.routes:
     distance_text = format_distance(
         distance_miles
     )
-
-    # --------------------------------------------------------
-    # ETA CARD
-    # --------------------------------------------------------
 
     st.markdown(
         f"""
@@ -1285,10 +1273,6 @@ if st.session_state.routes:
         """,
         unsafe_allow_html=True,
     )
-
-    # --------------------------------------------------------
-    # METRICS
-    # --------------------------------------------------------
 
     st.write("")
 
@@ -1323,10 +1307,6 @@ if st.session_state.routes:
             "🌎 Distance",
             f"{distance_km:.1f} km",
         )
-
-    # --------------------------------------------------------
-    # ETA INFO
-    # --------------------------------------------------------
 
     timezone_name = get_timezone(
         st.session_state.search_lat,
@@ -1364,10 +1344,6 @@ if st.session_state.routes:
     st.caption(
         "ETA automatically refreshes every 60 seconds."
     )
-
-    # --------------------------------------------------------
-    # ROUTE OPTIONS
-    # --------------------------------------------------------
 
     if len(
         st.session_state.routes
