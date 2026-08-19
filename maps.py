@@ -218,15 +218,53 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     try:
 
-        # Pull extra candidates so there's enough to
-        # re-rank by distance before trimming to `limit`.
-        locations = geolocator.geocode(
-            query,
+        geocode_kwargs = dict(
             timeout=10,
             addressdetails=True,
             exactly_one=False,
             limit=20,
         )
+
+        # If we know where the user is, bias the search itself
+        # to a box around them (roughly 100 miles / ~1.5 degrees)
+        # so nearby matches actually show up in the candidate
+        # pool, instead of sorting Nominatim's global top hits
+        # (which skew toward "important" listings worldwide).
+        if origin_lat is not None and origin_lon is not None:
+
+            box_size = 1.5  # degrees, ~ local/regional search
+
+            viewbox = [
+                (
+                    origin_lat + box_size,
+                    origin_lon - box_size,
+                ),
+                (
+                    origin_lat - box_size,
+                    origin_lon + box_size,
+                ),
+            ]
+
+            geocode_kwargs["viewbox"] = viewbox
+            geocode_kwargs["bounded"] = True
+
+        locations = geolocator.geocode(
+            query,
+            **geocode_kwargs,
+        )
+
+        # Fall back to an unbounded global search if the
+        # bounded search comes up empty (e.g. searching for
+        # a place that genuinely isn't nearby).
+        if not locations and origin_lat is not None:
+
+            locations = geolocator.geocode(
+                query,
+                timeout=10,
+                addressdetails=True,
+                exactly_one=False,
+                limit=20,
+            )
 
         if not locations:
             return []
