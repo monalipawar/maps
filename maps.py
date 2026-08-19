@@ -1,5 +1,4 @@
-
-
+import math
 import streamlit as st
 import requests
 import folium
@@ -133,6 +132,8 @@ defaults = {
     "search_lon": None,
     "search_address": None,
 
+    "search_results": [],
+
     "routes": [],
 
     "favorites": [],
@@ -178,34 +179,92 @@ if st.session_state.routes:
 
 
 # ============================================================
-# SEARCH
+# DISTANCE HELPER (HAVERSINE)
+# ============================================================
+
+def haversine_miles(lat1, lon1, lat2, lon2):
+
+    R = 3958.8  # Earth radius in miles
+
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1)
+        * math.cos(phi2)
+        * math.sin(d_lambda / 2) ** 2
+    )
+
+    c = 2 * math.atan2(
+        math.sqrt(a),
+        math.sqrt(1 - a),
+    )
+
+    return R * c
+
+
+# ============================================================
+# SEARCH (MULTI-RESULT, PROXIMITY SORTED)
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_place(query):
+def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     try:
 
-        location = geolocator.geocode(
+        # Pull extra candidates so we have enough to
+        # re-rank by distance before trimming to `limit`.
+        locations = geolocator.geocode(
             query,
             timeout=10,
             addressdetails=True,
-            exactly_one=True,
+            exactly_one=False,
+            limit=20,
         )
 
-        if location:
+        if not locations:
+            return []
 
-            return {
-                "lat": location.latitude,
-                "lon": location.longitude,
-                "address": location.address,
+        results = [
+            {
+                "lat": loc.latitude,
+                "lon": loc.longitude,
+                "address": loc.address,
             }
+            for loc in locations
+        ]
+
+        if origin_lat is not None and origin_lon is not None:
+
+            for result in results:
+
+                result["distance_miles"] = haversine_miles(
+                    origin_lat,
+                    origin_lon,
+                    result["lat"],
+                    result["lon"],
+                )
+
+            results.sort(
+                key=lambda r: r["distance_miles"]
+            )
+
+        else:
+
+            for result in results:
+                result["distance_miles"] = None
+
+        return results[:limit]
 
     except Exception:
 
-        return None
+        return []
 
-    return None
+    return []
 
 
 # ============================================================
@@ -642,37 +701,59 @@ with st.sidebar:
                 "Searching..."
             ):
 
-                result = search_place(
-                    search_query
+                results = search_places(
+                    search_query,
+                    origin_lat=st.session_state.current_lat,
+                    origin_lon=st.session_state.current_lon,
                 )
 
-            if result:
+            if results:
 
-                st.session_state.search_lat = (
-                    result["lat"]
-                )
-
-                st.session_state.search_lon = (
-                    result["lon"]
-                )
-
-                st.session_state.search_address = (
-                    result["address"]
-                )
-
-                st.session_state.routes = []
-
-                st.success(
-                    "Destination found!"
-                )
+                st.session_state.search_results = results
 
             else:
+
+                st.session_state.search_results = []
 
                 st.error(
                     "Location not found. "
                     "Try a city, street address, "
                     "or landmark."
                 )
+
+    if st.session_state.search_results:
+
+        st.write("**Select a location:**")
+
+        for index, result in enumerate(
+            st.session_state.search_results
+        ):
+
+            if result["distance_miles"] is not None:
+
+                label = (
+                    f"📍 {result['address']} "
+                    f"({result['distance_miles']:.1f} mi)"
+                )
+
+            else:
+
+                label = f"📍 {result['address']}"
+
+            if st.button(
+                label,
+                key=f"result_{index}",
+                use_container_width=True,
+            ):
+
+                st.session_state.search_lat = result["lat"]
+                st.session_state.search_lon = result["lon"]
+                st.session_state.search_address = result["address"]
+
+                st.session_state.search_results = []
+                st.session_state.routes = []
+
+                st.rerun()
 
     st.divider()
 
@@ -1508,4 +1589,3 @@ st.caption(
     "Geocoding by OpenStreetMap Nominatim • "
     "Map data © OpenStreetMap contributors"
 )
-
