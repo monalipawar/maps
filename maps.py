@@ -1507,4 +1507,4 @@ st.caption(
     "Geocoding by OpenStreetMap Nominatim • "
     "Map data © OpenStreetMap contributors"
 )
-```
+
