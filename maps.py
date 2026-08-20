@@ -28,110 +28,164 @@ st.set_page_config(
 
 
 # ============================================================
-# CSS
+# CSS (rendered after session state so it can react to dark mode)
 # ============================================================
 
-st.markdown(
-    """
-    <style>
+def render_css():
 
-    .stApp {
-        background: #f5f7fb;
-    }
+    dark = st.session_state.dark_mode
 
-    .main-title {
-        font-size: 44px;
-        font-weight: 800;
-        margin-bottom: 0;
-    }
+    if dark:
 
-    .subtitle {
-        color: #687080;
-        font-size: 17px;
-        margin-bottom: 20px;
-    }
+        bg = "#0f172a"
+        card_bg = "#1e293b"
+        text = "#f1f5f9"
+        subtext = "#94a3b8"
+        shadow = "rgba(0,0,0,0.35)"
+        traffic_bg = "#14532d"
 
-    .eta-card {
-        background: white;
-        padding: 24px;
-        border-radius: 18px;
-        box-shadow: 0 4px 18px rgba(0,0,0,0.08);
-        text-align: center;
-        margin-top: 18px;
-    }
+    else:
 
-    .eta-label {
-        color: #687080;
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
+        bg = "#f5f7fb"
+        card_bg = "white"
+        text = "#1a1a1a"
+        subtext = "#687080"
+        shadow = "rgba(0,0,0,0.08)"
+        traffic_bg = "#e9f7ef"
 
-    .eta-time {
-        font-size: 42px;
-        font-weight: 800;
-        margin-top: 5px;
-    }
+    st.markdown(
+        f"""
+        <style>
 
-    .eta-date {
-        color: #687080;
-        font-size: 14px;
-    }
+        .stApp {{
+            background: {bg};
+        }}
 
-    .route-card {
-        background: white;
-        padding: 18px;
-        border-radius: 15px;
-        margin-bottom: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-    }
+        .main-title {{
+            font-size: 44px;
+            font-weight: 800;
+            margin-bottom: 0;
+            color: {text};
+        }}
 
-    .traffic-normal {
-        background: #e9f7ef;
-        padding: 12px;
-        border-radius: 12px;
-        margin-top: 12px;
-    }
+        .subtitle {{
+            color: {subtext};
+            font-size: 17px;
+            margin-bottom: 20px;
+        }}
 
-    .info-card {
-        background: white;
-        padding: 18px;
-        border-radius: 15px;
-        margin-top: 12px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-    }
+        .eta-card {{
+            background: {card_bg};
+            padding: 24px;
+            border-radius: 18px;
+            box-shadow: 0 4px 18px {shadow};
+            text-align: center;
+            margin-top: 18px;
+        }}
 
-    .place-card {
-        background: white;
-        padding: 14px;
-        border-radius: 12px;
-        margin-bottom: 8px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
+        .eta-label {{
+            color: {subtext};
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }}
 
-    div[data-testid="stMetric"] {
-        background: white;
-        border-radius: 12px;
-        padding: 12px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    }
+        .eta-time {{
+            font-size: 42px;
+            font-weight: 800;
+            margin-top: 5px;
+            color: {text};
+        }}
 
-    /* Tighten spacing between the location search result buttons */
-    section[data-testid="stSidebar"] div[data-testid="stButton"] {
-        margin-bottom: -14px;
-    }
+        .eta-date {{
+            color: {subtext};
+            font-size: 14px;
+        }}
 
-    section[data-testid="stSidebar"] div[data-testid="stButton"] button {
-        padding-top: 6px;
-        padding-bottom: 6px;
-        min-height: 0;
-        line-height: 1.2;
-    }
+        .route-card {{
+            background: {card_bg};
+            padding: 18px;
+            border-radius: 15px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 10px {shadow};
+            color: {text};
+        }}
 
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+        .traffic-normal {{
+            background: {traffic_bg};
+            padding: 12px;
+            border-radius: 12px;
+            margin-top: 12px;
+            color: {text};
+        }}
+
+        .info-card {{
+            background: {card_bg};
+            padding: 18px;
+            border-radius: 15px;
+            margin-top: 12px;
+            box-shadow: 0 2px 10px {shadow};
+            color: {text};
+        }}
+
+        .place-card {{
+            background: {card_bg};
+            padding: 14px;
+            border-radius: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 8px {shadow};
+            color: {text};
+        }}
+
+        .closest-badge {{
+            display: inline-block;
+            background: #22c55e;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 8px;
+            margin-left: 6px;
+            letter-spacing: 0.3px;
+        }}
+
+        .eta-skeleton {{
+            background: {card_bg};
+            padding: 24px;
+            border-radius: 18px;
+            box-shadow: 0 4px 18px {shadow};
+            text-align: center;
+            margin-top: 18px;
+        }}
+
+        div[data-testid="stMetric"] {{
+            background: {card_bg};
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 2px 8px {shadow};
+        }}
+
+        div[data-testid="stMetric"] label,
+        div[data-testid="stMetric"] div {{
+            color: {text} !important;
+        }}
+
+        /* Tighten spacing between the location search result buttons */
+        section[data-testid="stSidebar"] div[data-testid="stButton"] {{
+            margin-bottom: -14px;
+        }}
+
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button {{
+            padding-top: 6px;
+            padding-bottom: 6px;
+            min-height: 0;
+            line-height: 1.2;
+        }}
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
@@ -160,11 +214,54 @@ defaults = {
     "map_style": "OpenStreetMap",
 
     "route_mode": "driving",
+
+    "recent_searches": [],
+
+    "dark_mode": False,
+
+    "arrive_by": None,
+
+    "waypoints": [],
 }
 
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+render_css()
+
+
+# ============================================================
+# LOAD SHARED ROUTE FROM URL (if the app was opened via a
+# shared link with dest_lat/dest_lon/dest_name params)
+# ============================================================
+
+if (
+    "shared_link_loaded" not in st.session_state
+    and "dest_lat" in st.query_params
+    and "dest_lon" in st.query_params
+):
+
+    try:
+
+        st.session_state.search_lat = float(
+            st.query_params["dest_lat"]
+        )
+
+        st.session_state.search_lon = float(
+            st.query_params["dest_lon"]
+        )
+
+        st.session_state.search_address = st.query_params.get(
+            "dest_name",
+            "Shared destination",
+        )
+
+    except (ValueError, TypeError):
+
+        pass
+
+    st.session_state.shared_link_loaded = True
 
 
 # ============================================================
@@ -235,7 +332,7 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 # reliably finds the actual closest match.
 # ============================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
 def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     debug_notes = []
@@ -498,6 +595,7 @@ def get_osrm_routes(
     end_lat,
     end_lon,
     mode,
+    waypoints=None,
 ):
 
     if not GOOGLE_MAPS_API_KEY:
@@ -544,13 +642,32 @@ def get_osrm_routes(
             }
         },
         "travelMode": travel_mode,
-        "computeAlternativeRoutes": True,
+        "computeAlternativeRoutes": (
+            not waypoints
+        ),
     }
+
+    # Multi-stop routing: intermediate waypoints, visited in
+    # the order given.
+    if waypoints:
+
+        body["intermediates"] = [
+            {
+                "location": {
+                    "latLng": {
+                        "latitude": wp["lat"],
+                        "longitude": wp["lon"],
+                    }
+                }
+            }
+            for wp in waypoints
+        ]
 
     # Driving-only options (routing preference doesn't apply
     # to walking/cycling)
     if travel_mode == "DRIVE":
         body["routingPreference"] = "TRAFFIC_AWARE"
+
 
     try:
 
@@ -825,7 +942,19 @@ st.markdown(
 
 with st.sidebar:
 
-    st.header("🔎 Search")
+    toggle_col1, toggle_col2 = st.columns([3, 1])
+
+    with toggle_col1:
+        st.header("🔎 Search")
+
+    with toggle_col2:
+
+        dark_icon = "☀️" if st.session_state.dark_mode else "🌙"
+
+        if st.button(dark_icon, key="dark_mode_toggle"):
+
+            st.session_state.dark_mode = not st.session_state.dark_mode
+            st.rerun()
 
     search_query = st.text_input(
         "Where do you want to go?",
@@ -855,6 +984,17 @@ with st.sidebar:
 
                 st.session_state.search_results = results
 
+                # Track recent searches (most recent first,
+                # deduplicated, capped at 5).
+                recents = [
+                    q for q in st.session_state.recent_searches
+                    if q.lower() != search_query.strip().lower()
+                ]
+
+                recents.insert(0, search_query.strip())
+
+                st.session_state.recent_searches = recents[:5]
+
             else:
 
                 st.session_state.search_results = []
@@ -873,6 +1013,34 @@ with st.sidebar:
 
                     st.caption(note)
 
+    if (
+        st.session_state.recent_searches
+        and not st.session_state.search_results
+    ):
+
+        with st.expander("🕘 Recent searches"):
+
+            for index, recent_query in enumerate(
+                st.session_state.recent_searches
+            ):
+
+                if st.button(
+                    recent_query,
+                    key=f"recent_{index}",
+                    use_container_width=True,
+                ):
+
+                    with st.spinner("Searching..."):
+
+                        results = search_places(
+                            recent_query,
+                            origin_lat=st.session_state.current_lat,
+                            origin_lon=st.session_state.current_lon,
+                        )
+
+                    st.session_state.search_results = results
+                    st.rerun()
+
     if st.session_state.search_results:
 
         st.write("**Select a location:**")
@@ -881,10 +1049,17 @@ with st.sidebar:
             st.session_state.search_results
         ):
 
+            closest_badge = (
+                " ⭐ CLOSEST"
+                if index == 0
+                and result["distance_miles"] is not None
+                else ""
+            )
+
             if result["distance_miles"] is not None:
 
                 label = (
-                    f"📍 **{result['distance_miles']:.1f} mi** — "
+                    f"📍 {result['distance_miles']:.1f} mi{closest_badge} — "
                     f"{result['address']}"
                 )
 
@@ -1014,6 +1189,146 @@ with st.sidebar:
                 st.error(
                     "No route could be found."
                 )
+
+    st.divider()
+
+    st.header("⏰ Arrive By")
+
+    use_arrive_by = st.toggle(
+        "Set a target arrival time",
+        value=st.session_state.arrive_by is not None,
+    )
+
+    if use_arrive_by:
+
+        arrive_by_time = st.time_input(
+            "Arrive by",
+            value=(
+                st.session_state.arrive_by
+                if st.session_state.arrive_by
+                else datetime.now().time()
+            ),
+        )
+
+        st.session_state.arrive_by = arrive_by_time
+
+    else:
+
+        st.session_state.arrive_by = None
+
+    if st.session_state.search_address:
+
+        st.divider()
+
+        st.header("🔗 Share")
+
+        share_url = (
+            "?dest_lat="
+            f"{st.session_state.search_lat}"
+            "&dest_lon="
+            f"{st.session_state.search_lon}"
+            "&dest_name="
+            f"{st.session_state.search_address}"
+        )
+
+        st.text_input(
+            "Shareable link (append to your app's base URL)",
+            value=share_url,
+            key="share_url_display",
+        )
+
+    st.divider()
+
+    st.header("📍 Multi-Stop Route")
+
+    if st.session_state.search_lat is not None:
+
+        if st.button(
+            "➕ Add current destination as a stop",
+            use_container_width=True,
+        ):
+
+            st.session_state.waypoints.append(
+                {
+                    "lat": st.session_state.search_lat,
+                    "lon": st.session_state.search_lon,
+                    "name": st.session_state.search_address,
+                }
+            )
+
+            st.rerun()
+
+    if st.session_state.waypoints:
+
+        st.caption(
+            f"{len(st.session_state.waypoints)} stop(s), "
+            "visited in this order:"
+        )
+
+        for wp_index, waypoint in enumerate(
+            st.session_state.waypoints
+        ):
+
+            wp_col1, wp_col2 = st.columns([5, 1])
+
+            with wp_col1:
+
+                st.write(
+                    f"{wp_index + 1}. {waypoint['name']}"
+                )
+
+            with wp_col2:
+
+                if st.button(
+                    "✕",
+                    key=f"remove_waypoint_{wp_index}",
+                ):
+
+                    st.session_state.waypoints.pop(wp_index)
+                    st.rerun()
+
+        if (
+            st.session_state.current_lat is not None
+            and st.session_state.search_lat is not None
+        ):
+
+            if st.button(
+                "🛣️ Route through all stops",
+                use_container_width=True,
+            ):
+
+                with st.spinner(
+                    "Finding the best multi-stop route..."
+                ):
+
+                    multi_routes = get_osrm_routes(
+                        st.session_state.current_lat,
+                        st.session_state.current_lon,
+                        st.session_state.search_lat,
+                        st.session_state.search_lon,
+                        st.session_state.route_mode,
+                        waypoints=st.session_state.waypoints,
+                    )
+
+                if multi_routes:
+
+                    st.session_state.routes = multi_routes
+
+                    st.success("Multi-stop route found!")
+
+                else:
+
+                    st.error(
+                        "Couldn't find a route through all stops."
+                    )
+
+        if st.button(
+            "🗑️ Clear all stops",
+            use_container_width=True,
+        ):
+
+            st.session_state.waypoints = []
+            st.rerun()
 
     st.divider()
 
@@ -1315,6 +1630,42 @@ if map_data:
 
 if st.session_state.routes:
 
+    # Silently re-fetch the route on each autorefresh so the
+    # ETA reflects current traffic conditions, not just a
+    # stale snapshot from when the route was first calculated.
+    # get_osrm_routes is cached for 30s (matching the
+    # autorefresh interval), so this doesn't add extra calls
+    # beyond one per refresh tick.
+    if (
+        st.session_state.current_lat is not None
+        and st.session_state.search_lat is not None
+    ):
+
+        try:
+
+            refreshed_routes = get_osrm_routes(
+                st.session_state.current_lat,
+                st.session_state.current_lon,
+                st.session_state.search_lat,
+                st.session_state.search_lon,
+                st.session_state.route_mode,
+                waypoints=(
+                    st.session_state.waypoints
+                    if st.session_state.waypoints
+                    else None
+                ),
+            )
+
+            if refreshed_routes:
+
+                st.session_state.routes = refreshed_routes
+
+        except Exception:
+
+            # Keep showing the last known route rather than
+            # breaking the page if a background refresh fails.
+            pass
+
     main_route = (
         st.session_state.routes[0]
     )
@@ -1350,6 +1701,9 @@ if st.session_state.routes:
         st.session_state.search_lon,
     ) or "UTC"
 
+    eta_card_bg = "#1e293b" if st.session_state.dark_mode else "white"
+    eta_text_color = "#f1f5f9" if st.session_state.dark_mode else "#1a1a1a"
+
     components.html(
         f"""
         <!DOCTYPE html>
@@ -1361,7 +1715,7 @@ if st.session_state.routes:
                     font-family: Arial, sans-serif;
                 }}
                 .eta-card {{
-                    background: white;
+                    background: {eta_card_bg};
                     padding: 24px;
                     border-radius: 18px;
                     box-shadow: 0 4px 18px rgba(0,0,0,0.08);
@@ -1370,13 +1724,29 @@ if st.session_state.routes:
                 .eta-time {{
                     font-size: 42px;
                     font-weight: 800;
-                    color: #1a1a1a;
+                    color: {eta_text_color};
+                }}
+                .eta-time.skeleton {{
+                    color: transparent;
+                    background: linear-gradient(
+                        90deg,
+                        rgba(150,150,150,0.15) 25%,
+                        rgba(150,150,150,0.3) 37%,
+                        rgba(150,150,150,0.15) 63%
+                    );
+                    background-size: 400% 100%;
+                    border-radius: 8px;
+                    animation: skeleton-pulse 1.4s ease infinite;
+                }}
+                @keyframes skeleton-pulse {{
+                    0% {{ background-position: 100% 50%; }}
+                    100% {{ background-position: 0% 50%; }}
                 }}
             </style>
         </head>
         <body>
             <div class="eta-card">
-                <div class="eta-time" id="eta-time">
+                <div class="eta-time skeleton" id="eta-time">
                     --:-- --
                 </div>
             </div>
@@ -1396,8 +1766,12 @@ if st.session_state.routes:
                         hour12: true
                     }};
 
-                    document.getElementById("eta-time").textContent =
+                    const etaElement = document.getElementById("eta-time");
+
+                    etaElement.textContent =
                         new Intl.DateTimeFormat("en-US", timeOptions).format(etaDate);
+
+                    etaElement.classList.remove("skeleton");
                 }}
 
                 updateEta();
@@ -1427,6 +1801,47 @@ if st.session_state.routes:
             ]
         )
     )
+
+    # --------------------------------------------------------
+    # LEAVE BY (if the user set a target arrival time)
+    # --------------------------------------------------------
+
+    leave_by_text = None
+
+    if st.session_state.arrive_by is not None:
+
+        target_arrival = datetime.combine(
+            destination_now.date(),
+            st.session_state.arrive_by,
+            tzinfo=destination_now.tzinfo,
+        )
+
+        # If that time has already passed today, assume they
+        # mean tomorrow.
+        if target_arrival < destination_now:
+
+            target_arrival += timedelta(days=1)
+
+        leave_by = target_arrival - timedelta(
+            seconds=main_route["duration_seconds"]
+        )
+
+        leave_by_text = leave_by.strftime("%I:%M %p")
+
+        if leave_by < destination_now:
+
+            st.warning(
+                f"⚠️ You should have already left to make your "
+                f"{target_arrival.strftime('%I:%M %p')} target — "
+                f"this trip takes {duration_text}."
+            )
+
+        else:
+
+            st.info(
+                f"🚗 Leave by **{leave_by_text}** to arrive by "
+                f"{target_arrival.strftime('%I:%M %p')}."
+            )
 
     st.write("")
 
@@ -1467,11 +1882,17 @@ if st.session_state.routes:
         st.session_state.search_lon,
     )
 
+    traffic_label = (
+        "🚦 Traffic-Aware ETA"
+        if st.session_state.route_mode == "driving"
+        else "🟢 Road-network ETA"
+    )
+
     st.markdown(
         f"""
         <div class="traffic-normal">
 
-        🟢 <b>Road-network ETA</b>
+        {traffic_label}
 
         <br><br>
 
@@ -1496,7 +1917,8 @@ if st.session_state.routes:
         )
 
     st.caption(
-        "ETA automatically refreshes every second."
+        "ETA clock ticks live every second. "
+        "Route & traffic conditions refresh every 30 seconds."
     )
 
     if len(
@@ -1689,8 +2111,8 @@ if st.session_state.favorites:
         st.session_state.favorites
     ):
 
-        col1, col2 = st.columns(
-            [6, 1]
+        col1, col2, col3 = st.columns(
+            [5, 1.3, 1]
         )
 
         with col1:
@@ -1700,6 +2122,35 @@ if st.session_state.favorites:
             )
 
         with col2:
+
+            if st.button(
+                "🛣️ Route",
+                key=f"route_to_fav_{index}",
+            ):
+
+                st.session_state.search_lat = favorite["lat"]
+                st.session_state.search_lon = favorite["lon"]
+                st.session_state.search_address = favorite["name"]
+
+                st.session_state.routes = []
+
+                if st.session_state.current_lat is not None:
+
+                    with st.spinner("Finding the best route..."):
+
+                        auto_routes = get_osrm_routes(
+                            st.session_state.current_lat,
+                            st.session_state.current_lon,
+                            favorite["lat"],
+                            favorite["lon"],
+                            st.session_state.route_mode,
+                        )
+
+                    st.session_state.routes = auto_routes
+
+                st.rerun()
+
+        with col3:
 
             if st.button(
                 "✕",
