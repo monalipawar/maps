@@ -1,6 +1,7 @@
 import math
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import folium
 
@@ -186,13 +187,15 @@ GOOGLE_MAPS_API_KEY = st.secrets.get(
 # AUTOMATIC ETA REFRESH
 # ============================================================
 
-# Refresh every 60 seconds once a route exists.
-# This keeps the ETA current as the clock advances.
+# Refresh every 30 seconds once a route exists, to keep the
+# metrics/map in sync. The big ETA clock itself ticks live via
+# client-side JavaScript below, so it doesn't need a full rerun
+# every second.
 
 if st.session_state.routes:
 
     st_autorefresh(
-        interval=1000,
+        interval=30 * 1000,
         key="eta_refresh",
     )
 
@@ -1334,6 +1337,81 @@ if st.session_state.routes:
         ]
     )
 
+    duration_text = format_duration(
+        duration_minutes
+    )
+
+    distance_text = format_distance(
+        distance_miles
+    )
+
+    destination_timezone_name = get_timezone(
+        st.session_state.search_lat,
+        st.session_state.search_lon,
+    ) or "UTC"
+
+    components.html(
+        f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{
+                    margin: 0;
+                    font-family: Arial, sans-serif;
+                }}
+                .eta-card {{
+                    background: white;
+                    padding: 24px;
+                    border-radius: 18px;
+                    box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+                    text-align: center;
+                }}
+                .eta-time {{
+                    font-size: 42px;
+                    font-weight: 800;
+                    color: #1a1a1a;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="eta-card">
+                <div class="eta-time" id="eta-time">
+                    --:-- --
+                </div>
+            </div>
+            <script>
+                const durationSeconds = {main_route["duration_seconds"]};
+                const destinationTimeZone = "{destination_timezone_name}";
+
+                function updateEta() {{
+                    const now = new Date();
+                    const etaMs = now.getTime() + durationSeconds * 1000;
+                    const etaDate = new Date(etaMs);
+
+                    const timeOptions = {{
+                        timeZone: destinationTimeZone,
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        hour12: true
+                    }};
+
+                    document.getElementById("eta-time").textContent =
+                        new Intl.DateTimeFormat("en-US", timeOptions).format(etaDate);
+                }}
+
+                updateEta();
+                setInterval(updateEta, 1000);
+            </script>
+        </body>
+        </html>
+        """,
+        height=130,
+    )
+
+    # Keep a Python-side ETA value too, for the metrics below
+    # and anything else that reads it (won't tick live, but
+    # stays accurate as of each rerun).
     destination_now = (
         get_destination_time(
             st.session_state.search_lat,
@@ -1348,27 +1426,6 @@ if st.session_state.routes:
                 "duration_seconds"
             ]
         )
-    )
-
-    duration_text = format_duration(
-        duration_minutes
-    )
-
-    distance_text = format_distance(
-        distance_miles
-    )
-
-    st.markdown(
-        f"""
-        <div class="eta-card">
-
-            <div class="eta-time">
-                {eta.strftime("%I:%M %p")}
-            </div>
-
-        </div>
-        """,
-        unsafe_allow_html=True,
     )
 
     st.write("")
