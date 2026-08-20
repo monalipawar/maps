@@ -176,6 +176,11 @@ geolocator = Nominatim(
 
 timezone_finder = TimezoneFinder()
 
+GOOGLE_MAPS_API_KEY = st.secrets.get(
+    "GOOGLE_MAPS_API_KEY",
+    "",
+)
+
 
 # ============================================================
 # AUTOMATIC ETA REFRESH
@@ -222,109 +227,9 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
-# OVERPASS NAME SEARCH (proximity-based: finds places by
-# actual distance from the origin, not text "importance"
-# the way Nominatim ranks things)
-# ============================================================
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def search_places_overpass(query, origin_lat, origin_lon, radius_meters=64000):
-
-    escaped_query = query.replace('"', '')
-
-    overpass_query = f"""
-    [out:json][timeout:25];
-
-    (
-        node["name"~"{escaped_query}",i]
-        (around:{radius_meters},{origin_lat},{origin_lon});
-
-        way["name"~"{escaped_query}",i]
-        (around:{radius_meters},{origin_lat},{origin_lon});
-    );
-
-    out center;
-    """
-
-    headers = {
-        "User-Agent": "MapExplorerV4/1.0"
-    }
-
-    try:
-
-        response = requests.post(
-            "https://overpass-api.de/api/interpreter",
-            data=overpass_query,
-            headers=headers,
-            timeout=30,
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        results = []
-
-        for element in data.get("elements", []):
-
-            tags = element.get("tags", {})
-
-            name = tags.get("name")
-
-            if not name:
-                continue
-
-            if element["type"] == "node":
-
-                place_lat = element.get("lat")
-                place_lon = element.get("lon")
-
-            else:
-
-                center = element.get("center", {})
-                place_lat = center.get("lat")
-                place_lon = center.get("lon")
-
-            if place_lat is None or place_lon is None:
-                continue
-
-            address_parts = [
-                name,
-                " ".join(
-                    part
-                    for part in [
-                        tags.get("addr:housenumber"),
-                        tags.get("addr:street"),
-                    ]
-                    if part
-                ),
-                tags.get("addr:city"),
-                tags.get("addr:state"),
-                tags.get("addr:postcode"),
-            ]
-
-            address = ", ".join(
-                part for part in address_parts if part
-            )
-
-            results.append(
-                {
-                    "lat": place_lat,
-                    "lon": place_lon,
-                    "address": address,
-                }
-            )
-
-        return results, None
-
-    except Exception as exc:
-
-        return [], str(exc)
-
-
-# ============================================================
-# SEARCH (returns up to `limit` candidates, ranked by
-# distance from the origin if one is provided)
+# GOOGLE PLACES SEARCH (Text Search - New) - proximity-biased,
+# uses Google's business listing data instead of OSM, so it
+# reliably finds the actual closest match.
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -332,130 +237,105 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     debug_notes = []
 
+    if not GOOGLE_MAPS_API_KEY:
+
+        st.session_state.last_search_debug = [
+            "No GOOGLE_MAPS_API_KEY found in Streamlit secrets."
+        ]
+
+        return []
+
+    url = "https://places.googleapis.com/v1/places:searchText"
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": (
+            "places.id,"
+            "places.displayName,"
+            "places.formattedAddress,"
+            "places.location"
+        ),
+    }
+
+    body = {
+        "textQuery": query,
+        "pageSize": 20,
+    }
+
+    if origin_lat is not None and origin_lon is not None:
+
+        # Bias (not restrict) results toward the user's area,
+        # so nearby matches are preferred without excluding a
+        # genuinely relevant distant match entirely.
+        body["locationBias"] = {
+            "circle": {
+                "center": {
+                    "latitude": origin_lat,
+                    "longitude": origin_lon,
+                },
+                "radius": 50000.0,  # meters, ~31 miles
+            }
+        }
+
     try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            timeout=15,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        places = data.get("places", [])
+
+        if not places:
+
+            debug_notes.append(
+                "Google Places returned no matches."
+            )
+
+            st.session_state.last_search_debug = debug_notes
+
+            return []
 
         results = []
 
-        # Query Overpass first when we know the user's
-        # location: it searches by real proximity to a
-        # point, so it won't miss the actual closest match
-        # the way Nominatim's relevance-ranked text search
-        # sometimes does.
-        if origin_lat is not None and origin_lon is not None:
+        for place in places:
 
-            overpass_results, overpass_error = search_places_overpass(
-                query,
-                origin_lat,
-                origin_lon,
+            location = place.get("location", {})
+
+            place_lat = location.get("latitude")
+            place_lon = location.get("longitude")
+
+            if place_lat is None or place_lon is None:
+                continue
+
+            display_name = place.get(
+                "displayName", {}
+            ).get("text", "")
+
+            address = place.get(
+                "formattedAddress", ""
             )
 
-            if overpass_error:
-
-                debug_notes.append(
-                    f"Overpass error: {overpass_error}"
-                )
-
-            elif not overpass_results:
-
-                debug_notes.append(
-                    "Overpass returned no matches."
-                )
-
-            results.extend(overpass_results)
-
-        # Always also query Nominatim and merge in anything
-        # new, so a slow/blocked Overpass never means empty
-        # results, and Nominatim can still surface places
-        # Overpass/OSM tagging happens to be missing.
-        geocode_kwargs = dict(
-            timeout=10,
-            addressdetails=True,
-            exactly_one=False,
-            limit=50,
-        )
-
-        if origin_lat is not None and origin_lon is not None:
-
-            box_size = 0.6  # degrees, ~ tight local search (~40 mi)
-
-            viewbox = [
-                (
-                    origin_lat + box_size,
-                    origin_lon - box_size,
-                ),
-                (
-                    origin_lat - box_size,
-                    origin_lon + box_size,
-                ),
-            ]
-
-            geocode_kwargs["viewbox"] = viewbox
-            geocode_kwargs["bounded"] = False
-
-        try:
-
-            locations = geolocator.geocode(
-                query,
-                **geocode_kwargs,
+            full_address = (
+                f"{display_name}, {address}"
+                if display_name
+                else address
             )
 
-        except Exception as exc:
-
-            locations = None
-            debug_notes.append(
-                f"Nominatim error: {exc}"
+            results.append(
+                {
+                    "lat": place_lat,
+                    "lon": place_lon,
+                    "address": full_address,
+                }
             )
-
-        if locations:
-
-            results.extend(
-                [
-                    {
-                        "lat": loc.latitude,
-                        "lon": loc.longitude,
-                        "address": loc.address,
-                    }
-                    for loc in locations
-                ]
-            )
-
-        elif not results:
-
-            debug_notes.append(
-                "Nominatim returned no matches either."
-            )
-
-        if not results:
-
-            st.session_state.last_search_debug = debug_notes
-            return []
-
-        # Drop near-duplicate listings (same spot geocoded
-        # twice, e.g. building vs. parking entrance) so they
-        # don't crowd out a genuinely different, closer result.
-        deduped = []
-        seen_coords = []
-
-        for result in results:
-
-            is_duplicate = any(
-                haversine_miles(
-                    result["lat"],
-                    result["lon"],
-                    seen_lat,
-                    seen_lon,
-                ) < 0.05
-                for seen_lat, seen_lon in seen_coords
-            )
-
-            if not is_duplicate:
-
-                deduped.append(result)
-                seen_coords.append(
-                    (result["lat"], result["lon"])
-                )
-
-        results = deduped
 
         if origin_lat is not None and origin_lon is not None:
 
@@ -483,8 +363,8 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     except Exception as exc:
 
-        st.session_state.last_search_debug = debug_notes + [
-            f"Unexpected error: {exc}"
+        st.session_state.last_search_debug = [
+            f"Google Places error: {exc}"
         ]
 
         return []
@@ -560,7 +440,52 @@ def get_destination_time(lat, lon):
 
 
 # ============================================================
-# OSRM ROUTING
+# POLYLINE DECODER (Google's encoded polyline algorithm)
+# ============================================================
+
+def decode_polyline(encoded):
+
+    points = []
+    index = 0
+    lat = 0
+    lon = 0
+
+    while index < len(encoded):
+
+        for field in ["lat", "lon"]:
+
+            shift = 0
+            result = 0
+
+            while True:
+
+                byte = ord(encoded[index]) - 63
+                index += 1
+
+                result |= (byte & 0x1f) << shift
+                shift += 5
+
+                if byte < 0x20:
+                    break
+
+            delta = (
+                ~(result >> 1)
+                if (result & 1)
+                else (result >> 1)
+            )
+
+            if field == "lat":
+                lat += delta
+            else:
+                lon += delta
+
+        points.append([lat / 1e5, lon / 1e5])
+
+    return points
+
+
+# ============================================================
+# GOOGLE ROUTES API
 # ============================================================
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -572,43 +497,64 @@ def get_osrm_routes(
     mode,
 ):
 
-    profile_map = {
-        "driving": "driving",
-        "walking": "foot",
-        "cycling": "bike",
+    if not GOOGLE_MAPS_API_KEY:
+        return []
+
+    travel_mode_map = {
+        "driving": "DRIVE",
+        "walking": "WALK",
+        "cycling": "BICYCLE",
     }
 
-    profile = profile_map.get(
+    travel_mode = travel_mode_map.get(
         mode,
-        "driving",
+        "DRIVE",
     )
 
-    url = (
-        "https://router.project-osrm.org/"
-        f"route/v1/{profile}/"
-        f"{start_lon},{start_lat};"
-        f"{end_lon},{end_lat}"
-    )
-
-    params = {
-        "overview": "full",
-        "geometries": "geojson",
-        "alternatives": "true",
-        "steps": "true",
-    }
+    url = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
     headers = {
-        "User-Agent": (
-            "MapExplorerV4/1.0"
-        )
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": (
+            "routes.distanceMeters,"
+            "routes.duration,"
+            "routes.polyline.encodedPolyline"
+        ),
     }
+
+    body = {
+        "origin": {
+            "location": {
+                "latLng": {
+                    "latitude": start_lat,
+                    "longitude": start_lon,
+                }
+            }
+        },
+        "destination": {
+            "location": {
+                "latLng": {
+                    "latitude": end_lat,
+                    "longitude": end_lon,
+                }
+            }
+        },
+        "travelMode": travel_mode,
+        "computeAlternativeRoutes": True,
+    }
+
+    # Driving-only options (routing preference doesn't apply
+    # to walking/cycling)
+    if travel_mode == "DRIVE":
+        body["routingPreference"] = "TRAFFIC_AWARE"
 
     try:
 
-        response = requests.get(
+        response = requests.post(
             url,
-            params=params,
             headers=headers,
+            json=body,
             timeout=30,
         )
 
@@ -616,68 +562,41 @@ def get_osrm_routes(
 
         data = response.json()
 
-        if data.get("code") != "Ok":
-
-            return []
-
         routes = []
 
-        for route in data.get(
-            "routes",
-            []
-        ):
+        for route in data.get("routes", []):
+
+            distance_meters = route.get(
+                "distanceMeters", 0
+            )
+
+            duration_str = route.get(
+                "duration", "0s"
+            )
+
+            duration_seconds = float(
+                duration_str.rstrip("s")
+            )
+
+            encoded_polyline = route.get(
+                "polyline", {}
+            ).get("encodedPolyline", "")
+
+            geometry = (
+                decode_polyline(encoded_polyline)
+                if encoded_polyline
+                else []
+            )
 
             routes.append(
                 {
-                    "distance_meters":
-                        route.get(
-                            "distance",
-                            0
-                        ),
-
-                    "distance_miles":
-                        route.get(
-                            "distance",
-                            0
-                        ) / 1609.344,
-
-                    "distance_km":
-                        route.get(
-                            "distance",
-                            0
-                        ) / 1000,
-
-                    "duration_seconds":
-                        route.get(
-                            "duration",
-                            0
-                        ),
-
-                    "duration_minutes":
-                        route.get(
-                            "duration",
-                            0
-                        ) / 60,
-
-                    "geometry":
-                        [
-                            [
-                                point[1],
-                                point[0]
-                            ]
-                            for point
-                            in route[
-                                "geometry"
-                            ][
-                                "coordinates"
-                            ]
-                        ],
-
-                    "legs":
-                        route.get(
-                            "legs",
-                            []
-                        ),
+                    "distance_meters": distance_meters,
+                    "distance_miles": distance_meters / 1609.344,
+                    "distance_km": distance_meters / 1000,
+                    "duration_seconds": duration_seconds,
+                    "duration_minutes": duration_seconds / 60,
+                    "geometry": geometry,
+                    "legs": [],
                 }
             )
 
@@ -686,7 +605,6 @@ def get_osrm_routes(
     except Exception:
 
         return []
-
 
 # ============================================================
 # NEARBY PLACES
@@ -1780,7 +1698,7 @@ st.divider()
 
 st.caption(
     "🗺️ Map Explorer V4 • "
-    "Routing by OSRM • "
-    "Geocoding by OpenStreetMap Nominatim • "
+    "Routing & search by Google Maps Platform • "
+    "Nearby places by OpenStreetMap • "
     "Map data © OpenStreetMap contributors"
 )
