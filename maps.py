@@ -192,7 +192,7 @@ GOOGLE_MAPS_API_KEY = st.secrets.get(
 if st.session_state.routes:
 
     st_autorefresh(
-        interval=60 * 1000,
+        interval=1000,
         key="eta_refresh",
     )
 
@@ -1439,7 +1439,7 @@ if st.session_state.routes:
         )
 
     st.caption(
-        "ETA automatically refreshes every 60 seconds."
+        "ETA automatically refreshes every second."
     )
 
     if len(
