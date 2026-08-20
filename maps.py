@@ -253,7 +253,7 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             ]
 
             geocode_kwargs["viewbox"] = viewbox
-            geocode_kwargs["bounded"] = True
+            geocode_kwargs["bounded"] = False
 
         locations = geolocator.geocode(
             query,
@@ -281,6 +281,33 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             }
             for loc in locations
         ]
+
+        # Drop near-duplicate listings (same spot geocoded
+        # twice, e.g. building vs. parking entrance) so they
+        # don't crowd out a genuinely different, closer result.
+        deduped = []
+        seen_coords = []
+
+        for result in results:
+
+            is_duplicate = any(
+                haversine_miles(
+                    result["lat"],
+                    result["lon"],
+                    seen_lat,
+                    seen_lon,
+                ) < 0.05
+                for seen_lat, seen_lon in seen_coords
+            )
+
+            if not is_duplicate:
+
+                deduped.append(result)
+                seen_coords.append(
+                    (result["lat"], result["lon"])
+                )
+
+        results = deduped
 
         if origin_lat is not None and origin_lon is not None:
 
@@ -1257,16 +1284,8 @@ if st.session_state.routes:
         f"""
         <div class="eta-card">
 
-            <div class="eta-label">
-                🕐 ESTIMATED ARRIVAL
-            </div>
-
             <div class="eta-time">
                 {eta.strftime("%I:%M %p")}
-            </div>
-
-            <div class="eta-date">
-                {eta.strftime("%A, %B %d, %Y")}
             </div>
 
         </div>
