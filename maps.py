@@ -146,6 +146,7 @@ defaults = {
     "search_address": None,
 
     "search_results": [],
+    "last_search_debug": [],
 
     "routes": [],
 
@@ -221,6 +222,107 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
+# OVERPASS NAME SEARCH (proximity-based: finds places by
+# actual distance from the origin, not text "importance"
+# the way Nominatim ranks things)
+# ============================================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_places_overpass(query, origin_lat, origin_lon, radius_meters=64000):
+
+    escaped_query = query.replace('"', '')
+
+    overpass_query = f"""
+    [out:json][timeout:25];
+
+    (
+        node["name"~"{escaped_query}",i]
+        (around:{radius_meters},{origin_lat},{origin_lon});
+
+        way["name"~"{escaped_query}",i]
+        (around:{radius_meters},{origin_lat},{origin_lon});
+    );
+
+    out center;
+    """
+
+    headers = {
+        "User-Agent": "MapExplorerV4/1.0"
+    }
+
+    try:
+
+        response = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data=overpass_query,
+            headers=headers,
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        results = []
+
+        for element in data.get("elements", []):
+
+            tags = element.get("tags", {})
+
+            name = tags.get("name")
+
+            if not name:
+                continue
+
+            if element["type"] == "node":
+
+                place_lat = element.get("lat")
+                place_lon = element.get("lon")
+
+            else:
+
+                center = element.get("center", {})
+                place_lat = center.get("lat")
+                place_lon = center.get("lon")
+
+            if place_lat is None or place_lon is None:
+                continue
+
+            address_parts = [
+                name,
+                " ".join(
+                    part
+                    for part in [
+                        tags.get("addr:housenumber"),
+                        tags.get("addr:street"),
+                    ]
+                    if part
+                ),
+                tags.get("addr:city"),
+                tags.get("addr:state"),
+                tags.get("addr:postcode"),
+            ]
+
+            address = ", ".join(
+                part for part in address_parts if part
+            )
+
+            results.append(
+                {
+                    "lat": place_lat,
+                    "lon": place_lon,
+                    "address": address,
+                }
+            )
+
+        return results, None
+
+    except Exception as exc:
+
+        return [], str(exc)
+
+
+# ============================================================
 # SEARCH (returns up to `limit` candidates, ranked by
 # distance from the origin if one is provided)
 # ============================================================
@@ -228,8 +330,43 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
+    debug_notes = []
+
     try:
 
+        results = []
+
+        # Query Overpass first when we know the user's
+        # location: it searches by real proximity to a
+        # point, so it won't miss the actual closest match
+        # the way Nominatim's relevance-ranked text search
+        # sometimes does.
+        if origin_lat is not None and origin_lon is not None:
+
+            overpass_results, overpass_error = search_places_overpass(
+                query,
+                origin_lat,
+                origin_lon,
+            )
+
+            if overpass_error:
+
+                debug_notes.append(
+                    f"Overpass error: {overpass_error}"
+                )
+
+            elif not overpass_results:
+
+                debug_notes.append(
+                    "Overpass returned no matches."
+                )
+
+            results.extend(overpass_results)
+
+        # Always also query Nominatim and merge in anything
+        # new, so a slow/blocked Overpass never means empty
+        # results, and Nominatim can still surface places
+        # Overpass/OSM tagging happens to be missing.
         geocode_kwargs = dict(
             timeout=10,
             addressdetails=True,
@@ -255,32 +392,43 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             geocode_kwargs["viewbox"] = viewbox
             geocode_kwargs["bounded"] = False
 
-        locations = geolocator.geocode(
-            query,
-            **geocode_kwargs,
-        )
-
-        if not locations and origin_lat is not None:
+        try:
 
             locations = geolocator.geocode(
                 query,
-                timeout=10,
-                addressdetails=True,
-                exactly_one=False,
-                limit=50,
+                **geocode_kwargs,
             )
 
-        if not locations:
-            return []
+        except Exception as exc:
 
-        results = [
-            {
-                "lat": loc.latitude,
-                "lon": loc.longitude,
-                "address": loc.address,
-            }
-            for loc in locations
-        ]
+            locations = None
+            debug_notes.append(
+                f"Nominatim error: {exc}"
+            )
+
+        if locations:
+
+            results.extend(
+                [
+                    {
+                        "lat": loc.latitude,
+                        "lon": loc.longitude,
+                        "address": loc.address,
+                    }
+                    for loc in locations
+                ]
+            )
+
+        elif not results:
+
+            debug_notes.append(
+                "Nominatim returned no matches either."
+            )
+
+        if not results:
+
+            st.session_state.last_search_debug = debug_notes
+            return []
 
         # Drop near-duplicate listings (same spot geocoded
         # twice, e.g. building vs. parking entrance) so they
@@ -329,13 +477,17 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
             for result in results:
                 result["distance_miles"] = None
 
+        st.session_state.last_search_debug = debug_notes
+
         return results[:limit]
 
-    except Exception:
+    except Exception as exc:
+
+        st.session_state.last_search_debug = debug_notes + [
+            f"Unexpected error: {exc}"
+        ]
 
         return []
-
-    return []
 
 
 # ============================================================
@@ -791,6 +943,14 @@ with st.sidebar:
                     "Try a city, street address, "
                     "or landmark."
                 )
+
+        if st.session_state.last_search_debug:
+
+            with st.expander("🔧 Search debug info"):
+
+                for note in st.session_state.last_search_debug:
+
+                    st.caption(note)
 
     if st.session_state.search_results:
 
