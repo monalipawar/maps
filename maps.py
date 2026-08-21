@@ -440,8 +440,11 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
-# GOOGLE PLACES AUTOCOMPLETE - lightweight suggestions shown
-# below the search box as the user types.
+# GOOGLE PLACES AUTOCOMPLETE (legacy endpoint) - shown below
+# the search box as the user types. Uses the legacy Autocomplete
+# API specifically because it can return an actual distance
+# from the origin per suggestion, so results can be ranked
+# closest to farthest (the newer Autocomplete API omits this).
 # ============================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -450,35 +453,26 @@ def get_autocomplete_suggestions(query, origin_lat=None, origin_lon=None):
     if not GOOGLE_MAPS_API_KEY or len(query.strip()) < 3:
         return []
 
-    url = "https://places.googleapis.com/v1/places:autocomplete"
+    url = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-    }
-
-    body = {
+    params = {
         "input": query,
+        "key": GOOGLE_MAPS_API_KEY,
     }
 
     if origin_lat is not None and origin_lon is not None:
 
-        body["locationBias"] = {
-            "circle": {
-                "center": {
-                    "latitude": origin_lat,
-                    "longitude": origin_lon,
-                },
-                "radius": 50000.0,
-            }
-        }
+        # "origin" enables distance_meters on each prediction.
+        # "location" + "radius" bias results toward that area.
+        params["origin"] = f"{origin_lat},{origin_lon}"
+        params["location"] = f"{origin_lat},{origin_lon}"
+        params["radius"] = 50000
 
     try:
 
-        response = requests.post(
+        response = requests.get(
             url,
-            headers=headers,
-            json=body,
+            params=params,
             timeout=10,
         )
 
@@ -488,18 +482,39 @@ def get_autocomplete_suggestions(query, origin_lat=None, origin_lon=None):
 
         data = response.json()
 
+        if data.get("status") not in ("OK", "ZERO_RESULTS"):
+            return []
+
         suggestions = []
 
-        for suggestion in data.get("suggestions", [])[:5]:
+        for prediction in data.get("predictions", [])[:5]:
 
-            prediction = suggestion.get(
-                "placePrediction", {}
+            text = prediction.get("description", "")
+
+            if not text:
+                continue
+
+            distance_meters = prediction.get("distance_meters")
+
+            suggestions.append(
+                {
+                    "text": text,
+                    "distance_miles": (
+                        distance_meters / 1609.344
+                        if distance_meters is not None
+                        else None
+                    ),
+                }
             )
 
-            text = prediction.get("text", {}).get("text", "")
-
-            if text:
-                suggestions.append(text)
+        # Rank closest to farthest. Suggestions without a
+        # distance (e.g. no origin known) sort to the end.
+        suggestions.sort(
+            key=lambda s: (
+                s["distance_miles"] is None,
+                s["distance_miles"] or 0,
+            )
+        )
 
         return suggestions
 
@@ -1456,8 +1471,19 @@ with st.sidebar:
 
             for sugg_index, suggestion in enumerate(suggestions):
 
+                if suggestion["distance_miles"] is not None:
+
+                    label = (
+                        f"💡 {suggestion['distance_miles']:.1f} mi — "
+                        f"{suggestion['text']}"
+                    )
+
+                else:
+
+                    label = f"💡 {suggestion['text']}"
+
                 if st.button(
-                    f"💡 {suggestion}",
+                    label,
                     key=f"autocomplete_{sugg_index}",
                     use_container_width=True,
                 ):
@@ -1465,7 +1491,7 @@ with st.sidebar:
                     with st.spinner("Searching..."):
 
                         results = search_places(
-                            suggestion,
+                            suggestion["text"],
                             origin_lat=st.session_state.current_lat,
                             origin_lon=st.session_state.current_lon,
                         )
@@ -1474,10 +1500,10 @@ with st.sidebar:
 
                     recents = [
                         q for q in st.session_state.recent_searches
-                        if q.lower() != suggestion.lower()
+                        if q.lower() != suggestion["text"].lower()
                     ]
 
-                    recents.insert(0, suggestion)
+                    recents.insert(0, suggestion["text"])
 
                     st.session_state.recent_searches = recents[:5]
 
