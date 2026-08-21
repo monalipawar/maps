@@ -1,4 +1,6 @@
 import math
+import json
+import os
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -182,6 +184,40 @@ def render_css():
             line-height: 1.2;
         }}
 
+        /* Mobile tightening: smaller headline/ETA text, less
+           padding, so the app doesn't feel oversized on phones. */
+        @media (max-width: 640px) {{
+
+            .main-title {{
+                font-size: 30px;
+            }}
+
+            .subtitle {{
+                font-size: 14px;
+                margin-bottom: 12px;
+            }}
+
+            .eta-card, .eta-skeleton {{
+                padding: 16px;
+            }}
+
+            .eta-time {{
+                font-size: 32px;
+            }}
+
+            .route-card, .info-card, .place-card {{
+                padding: 12px;
+            }}
+
+            div[data-testid="stMetric"] {{
+                padding: 8px;
+            }}
+
+            div[data-testid="stMetricValue"] {{
+                font-size: 18px;
+            }}
+        }}
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -222,6 +258,15 @@ defaults = {
     "arrive_by": None,
 
     "waypoints": [],
+
+    "google_api_call_count": 0,
+
+    "last_removed_favorite": None,
+    "last_removed_waypoint": None,
+
+    "route_presets": [],
+
+    "optimize_stop_order": False,
 }
 
 for key, value in defaults.items():
@@ -229,6 +274,74 @@ for key, value in defaults.items():
         st.session_state[key] = value
 
 render_css()
+
+
+# ============================================================
+# LOCAL PERSISTENCE (favorites, recent searches, presets)
+#
+# Note: this saves to a JSON file on the app's local disk. On
+# Streamlit Cloud this persists between reruns/reboots as long
+# as the container isn't rebuilt (e.g. a fresh deploy from a
+# git push), but it is NOT per-visitor — if multiple people use
+# the same deployed app, they'd share this file. Fine for a
+# personal single-user app; not a substitute for a real database
+# if this app is ever shared with others.
+# ============================================================
+
+PERSISTENCE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "map_explorer_data.json",
+)
+
+
+def save_persisted_data():
+
+    try:
+
+        data = {
+            "favorites": st.session_state.favorites,
+            "recent_searches": st.session_state.recent_searches,
+            "route_presets": st.session_state.route_presets,
+        }
+
+        with open(PERSISTENCE_FILE, "w") as f:
+            json.dump(data, f)
+
+    except Exception:
+        pass
+
+
+def load_persisted_data():
+
+    try:
+
+        if not os.path.exists(PERSISTENCE_FILE):
+            return
+
+        with open(PERSISTENCE_FILE, "r") as f:
+            data = json.load(f)
+
+        if not st.session_state.favorites:
+            st.session_state.favorites = data.get("favorites", [])
+
+        if not st.session_state.recent_searches:
+            st.session_state.recent_searches = data.get(
+                "recent_searches", []
+            )
+
+        if not st.session_state.route_presets:
+            st.session_state.route_presets = data.get(
+                "route_presets", []
+            )
+
+    except Exception:
+        pass
+
+
+if "persisted_data_loaded" not in st.session_state:
+
+    load_persisted_data()
+    st.session_state.persisted_data_loaded = True
 
 
 # ============================================================
@@ -327,6 +440,75 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
+# GOOGLE PLACES AUTOCOMPLETE - lightweight suggestions shown
+# below the search box as the user types.
+# ============================================================
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_autocomplete_suggestions(query, origin_lat=None, origin_lon=None):
+
+    if not GOOGLE_MAPS_API_KEY or len(query.strip()) < 3:
+        return []
+
+    url = "https://places.googleapis.com/v1/places:autocomplete"
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+    }
+
+    body = {
+        "input": query,
+    }
+
+    if origin_lat is not None and origin_lon is not None:
+
+        body["locationBias"] = {
+            "circle": {
+                "center": {
+                    "latitude": origin_lat,
+                    "longitude": origin_lon,
+                },
+                "radius": 50000.0,
+            }
+        }
+
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        st.session_state.google_api_call_count += 1
+
+        data = response.json()
+
+        suggestions = []
+
+        for suggestion in data.get("suggestions", [])[:5]:
+
+            prediction = suggestion.get(
+                "placePrediction", {}
+            )
+
+            text = prediction.get("text", {}).get("text", "")
+
+            if text:
+                suggestions.append(text)
+
+        return suggestions
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
 # GOOGLE PLACES SEARCH (Text Search - New) - proximity-biased,
 # uses Google's business listing data instead of OSM, so it
 # reliably finds the actual closest match.
@@ -388,6 +570,8 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
         )
 
         response.raise_for_status()
+
+        st.session_state.google_api_call_count += 1
 
         data = response.json()
 
@@ -463,8 +647,67 @@ def search_places(query, origin_lat=None, origin_lon=None, limit=5):
 
     except Exception as exc:
 
+        # Graceful degradation: if Google Places errors out
+        # (quota hit, network issue, bad key), fall back to
+        # the free Nominatim stack rather than showing nothing.
+        try:
+
+            fallback_kwargs = dict(
+                timeout=10,
+                addressdetails=True,
+                exactly_one=False,
+                limit=20,
+            )
+
+            locations = geolocator.geocode(
+                query,
+                **fallback_kwargs,
+            )
+
+            if locations:
+
+                fallback_results = [
+                    {
+                        "lat": loc.latitude,
+                        "lon": loc.longitude,
+                        "address": loc.address,
+                    }
+                    for loc in locations
+                ]
+
+                if origin_lat is not None and origin_lon is not None:
+
+                    for result in fallback_results:
+
+                        result["distance_miles"] = haversine_miles(
+                            origin_lat,
+                            origin_lon,
+                            result["lat"],
+                            result["lon"],
+                        )
+
+                    fallback_results.sort(
+                        key=lambda r: r["distance_miles"]
+                    )
+
+                else:
+
+                    for result in fallback_results:
+                        result["distance_miles"] = None
+
+                st.session_state.last_search_debug = [
+                    f"Google Places error: {exc}",
+                    "Fell back to free OpenStreetMap search.",
+                ]
+
+                return fallback_results[:limit]
+
+        except Exception:
+            pass
+
         st.session_state.last_search_debug = [
-            f"Google Places error: {exc}"
+            f"Google Places error: {exc}",
+            "Fallback search also failed.",
         ]
 
         return []
@@ -540,6 +783,117 @@ def get_destination_time(lat, lon):
 
 
 # ============================================================
+# ELEVATION PROFILE (Google Elevation API)
+# ============================================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_elevation_profile(sampled_points):
+
+    if not GOOGLE_MAPS_API_KEY or not sampled_points:
+        return []
+
+    locations = "|".join(
+        f"{lat},{lon}" for lat, lon in sampled_points
+    )
+
+    url = "https://maps.googleapis.com/maps/api/elevation/json"
+
+    params = {
+        "locations": locations,
+        "key": GOOGLE_MAPS_API_KEY,
+    }
+
+    try:
+
+        response = requests.get(url, params=params, timeout=15)
+
+        response.raise_for_status()
+
+        st.session_state.google_api_call_count += 1
+
+        data = response.json()
+
+        if data.get("status") != "OK":
+            return []
+
+        return [
+            result["elevation"] * 3.28084  # meters -> feet
+            for result in data.get("results", [])
+        ]
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
+# DESTINATION WEATHER (free, Open-Meteo — no key required)
+# ============================================================
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_destination_weather(lat, lon):
+
+    url = "https://api.open-meteo.com/v1/forecast"
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,weather_code",
+        "temperature_unit": "fahrenheit",
+    }
+
+    weather_code_map = {
+        0: ("☀️", "Clear"),
+        1: ("🌤️", "Mostly clear"),
+        2: ("⛅", "Partly cloudy"),
+        3: ("☁️", "Overcast"),
+        45: ("🌫️", "Fog"),
+        48: ("🌫️", "Fog"),
+        51: ("🌦️", "Light drizzle"),
+        53: ("🌦️", "Drizzle"),
+        55: ("🌧️", "Heavy drizzle"),
+        61: ("🌦️", "Light rain"),
+        63: ("🌧️", "Rain"),
+        65: ("🌧️", "Heavy rain"),
+        71: ("🌨️", "Light snow"),
+        73: ("🌨️", "Snow"),
+        75: ("❄️", "Heavy snow"),
+        80: ("🌦️", "Rain showers"),
+        81: ("🌧️", "Rain showers"),
+        82: ("⛈️", "Violent showers"),
+        95: ("⛈️", "Thunderstorm"),
+    }
+
+    try:
+
+        response = requests.get(url, params=params, timeout=10)
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        current = data.get("current", {})
+
+        temperature = current.get("temperature_2m")
+        code = current.get("weather_code")
+
+        if temperature is None:
+            return None
+
+        icon, label = weather_code_map.get(code, ("🌡️", "—"))
+
+        return {
+            "temperature": round(temperature),
+            "icon": icon,
+            "label": label,
+        }
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
 # POLYLINE DECODER (Google's encoded polyline algorithm)
 # ============================================================
 
@@ -596,10 +950,17 @@ def get_osrm_routes(
     end_lon,
     mode,
     waypoints=None,
+    optimize_order=False,
 ):
 
     if not GOOGLE_MAPS_API_KEY:
-        return []
+
+        try:
+            return get_osrm_fallback_routes(
+                start_lat, start_lon, end_lat, end_lon, mode
+            )
+        except Exception:
+            return []
 
     travel_mode_map = {
         "driving": "DRIVE",
@@ -648,7 +1009,7 @@ def get_osrm_routes(
     }
 
     # Multi-stop routing: intermediate waypoints, visited in
-    # the order given.
+    # the order given (unless optimize_order is requested).
     if waypoints:
 
         body["intermediates"] = [
@@ -663,11 +1024,26 @@ def get_osrm_routes(
             for wp in waypoints
         ]
 
+        if optimize_order:
+            body["optimizeWaypointOrder"] = True
+
     # Driving-only options (routing preference doesn't apply
     # to walking/cycling)
     if travel_mode == "DRIVE":
         body["routingPreference"] = "TRAFFIC_AWARE"
 
+    field_mask = (
+        "routes.distanceMeters,"
+        "routes.duration,"
+        "routes.polyline.encodedPolyline,"
+        "routes.optimizedIntermediateWaypointIndex"
+    )
+
+    if travel_mode == "DRIVE":
+
+        field_mask += ",routes.travelAdvisory.speedReadingIntervals"
+
+    headers["X-Goog-FieldMask"] = field_mask
 
     try:
 
@@ -679,6 +1055,8 @@ def get_osrm_routes(
         )
 
         response.raise_for_status()
+
+        st.session_state.google_api_call_count += 1
 
         data = response.json()
 
@@ -708,6 +1086,14 @@ def get_osrm_routes(
                 else []
             )
 
+            speed_intervals = route.get(
+                "travelAdvisory", {}
+            ).get("speedReadingIntervals", [])
+
+            optimized_order = route.get(
+                "optimizedIntermediateWaypointIndex"
+            )
+
             routes.append(
                 {
                     "distance_meters": distance_meters,
@@ -717,6 +1103,100 @@ def get_osrm_routes(
                     "duration_minutes": duration_seconds / 60,
                     "geometry": geometry,
                     "legs": [],
+                    "speed_intervals": speed_intervals,
+                    "optimized_order": optimized_order,
+                }
+            )
+
+        return routes
+
+    except Exception:
+
+        # Graceful degradation: fall back to the free OSRM
+        # router if Google Routes errors out.
+        try:
+
+            return get_osrm_fallback_routes(
+                start_lat,
+                start_lon,
+                end_lat,
+                end_lon,
+                mode,
+            )
+
+        except Exception:
+
+            return []
+
+
+# ============================================================
+# FREE OSRM FALLBACK ROUTING (used only if Google Routes fails)
+# ============================================================
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_osrm_fallback_routes(
+    start_lat,
+    start_lon,
+    end_lat,
+    end_lon,
+    mode,
+):
+
+    profile_map = {
+        "driving": "driving",
+        "walking": "foot",
+        "cycling": "bike",
+    }
+
+    profile = profile_map.get(mode, "driving")
+
+    url = (
+        "https://router.project-osrm.org/"
+        f"route/v1/{profile}/"
+        f"{start_lon},{start_lat};"
+        f"{end_lon},{end_lat}"
+    )
+
+    params = {
+        "overview": "full",
+        "geometries": "geojson",
+        "alternatives": "true",
+    }
+
+    try:
+
+        response = requests.get(
+            url,
+            params=params,
+            headers={"User-Agent": "MapExplorerV4/1.0"},
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get("code") != "Ok":
+            return []
+
+        routes = []
+
+        for route in data.get("routes", []):
+
+            routes.append(
+                {
+                    "distance_meters": route.get("distance", 0),
+                    "distance_miles": route.get("distance", 0) / 1609.344,
+                    "distance_km": route.get("distance", 0) / 1000,
+                    "duration_seconds": route.get("duration", 0),
+                    "duration_minutes": route.get("duration", 0) / 60,
+                    "geometry": [
+                        [point[1], point[0]]
+                        for point in route["geometry"]["coordinates"]
+                    ],
+                    "legs": [],
+                    "speed_intervals": [],
+                    "optimized_order": None,
                 }
             )
 
@@ -961,7 +1441,49 @@ with st.sidebar:
         placeholder=(
             "New York City, Times Square..."
         ),
+        key="search_query_input",
     )
+
+    if search_query and len(search_query.strip()) >= 3:
+
+        suggestions = get_autocomplete_suggestions(
+            search_query,
+            origin_lat=st.session_state.current_lat,
+            origin_lon=st.session_state.current_lon,
+        )
+
+        if suggestions:
+
+            for sugg_index, suggestion in enumerate(suggestions):
+
+                if st.button(
+                    f"💡 {suggestion}",
+                    key=f"autocomplete_{sugg_index}",
+                    use_container_width=True,
+                ):
+
+                    with st.spinner("Searching..."):
+
+                        results = search_places(
+                            suggestion,
+                            origin_lat=st.session_state.current_lat,
+                            origin_lon=st.session_state.current_lon,
+                        )
+
+                    st.session_state.search_results = results
+
+                    recents = [
+                        q for q in st.session_state.recent_searches
+                        if q.lower() != suggestion.lower()
+                    ]
+
+                    recents.insert(0, suggestion)
+
+                    st.session_state.recent_searches = recents[:5]
+
+                    save_persisted_data()
+
+                    st.rerun()
 
     if st.button(
         "🔍 Search",
@@ -994,6 +1516,8 @@ with st.sidebar:
                 recents.insert(0, search_query.strip())
 
                 st.session_state.recent_searches = recents[:5]
+
+                save_persisted_data()
 
             else:
 
@@ -1086,32 +1610,86 @@ with st.sidebar:
 
     st.header("📍 Your Location")
 
-    location = streamlit_geolocation()
+    location_tab = st.radio(
+        "How to set your location",
+        ["Auto-detect", "Type it in"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-    if location:
+    if location_tab == "Auto-detect":
 
-        lat = location.get(
-            "latitude"
-        )
+        location = streamlit_geolocation()
 
-        lon = location.get(
-            "longitude"
-        )
+        if location:
 
-        if (
-            lat is not None
-            and lon is not None
-        ):
-
-            st.session_state.current_lat = lat
-            st.session_state.current_lon = lon
-
-            st.success(
-                "Location detected!"
+            lat = location.get(
+                "latitude"
             )
 
+            lon = location.get(
+                "longitude"
+            )
+
+            if (
+                lat is not None
+                and lon is not None
+            ):
+
+                st.session_state.current_lat = lat
+                st.session_state.current_lon = lon
+
+                st.success(
+                    "Location detected!"
+                )
+
+                st.caption(
+                    f"{lat:.5f}, {lon:.5f}"
+                )
+
+    else:
+
+        manual_location = st.text_input(
+            "Enter your address or city",
+            placeholder="Plainsboro, NJ",
+            key="manual_location_input",
+        )
+
+        if st.button(
+            "📍 Set Location",
+            use_container_width=True,
+        ):
+
+            if manual_location.strip():
+
+                with st.spinner("Finding that location..."):
+
+                    manual_results = search_places(
+                        manual_location.strip(),
+                        limit=1,
+                    )
+
+                if manual_results:
+
+                    st.session_state.current_lat = manual_results[0]["lat"]
+                    st.session_state.current_lon = manual_results[0]["lon"]
+
+                    st.success(
+                        f"Location set: {manual_results[0]['address']}"
+                    )
+
+                else:
+
+                    st.error(
+                        "Couldn't find that location. "
+                        "Try a more specific address or city."
+                    )
+
+        if st.session_state.current_lat is not None:
+
             st.caption(
-                f"{lat:.5f}, {lon:.5f}"
+                f"Current: {st.session_state.current_lat:.5f}, "
+                f"{st.session_state.current_lon:.5f}"
             )
 
     st.divider()
@@ -1258,6 +1836,28 @@ with st.sidebar:
 
             st.rerun()
 
+    if st.session_state.last_removed_waypoint is not None:
+
+        undo_col1, undo_col2 = st.columns([4, 1])
+
+        with undo_col1:
+
+            st.caption(
+                f"Removed \"{st.session_state.last_removed_waypoint['name']}\""
+            )
+
+        with undo_col2:
+
+            if st.button("↩️ Undo", key="undo_waypoint"):
+
+                st.session_state.waypoints.append(
+                    st.session_state.last_removed_waypoint
+                )
+
+                st.session_state.last_removed_waypoint = None
+
+                st.rerun()
+
     if st.session_state.waypoints:
 
         st.caption(
@@ -1284,8 +1884,15 @@ with st.sidebar:
                     key=f"remove_waypoint_{wp_index}",
                 ):
 
-                    st.session_state.waypoints.pop(wp_index)
+                    st.session_state.last_removed_waypoint = (
+                        st.session_state.waypoints.pop(wp_index)
+                    )
                     st.rerun()
+
+        st.session_state.optimize_stop_order = st.checkbox(
+            "🧭 Optimize stop order (shortest total trip)",
+            value=st.session_state.optimize_stop_order,
+        )
 
         if (
             st.session_state.current_lat is not None
@@ -1308,6 +1915,7 @@ with st.sidebar:
                         st.session_state.search_lon,
                         st.session_state.route_mode,
                         waypoints=st.session_state.waypoints,
+                        optimize_order=st.session_state.optimize_stop_order,
                     )
 
                 if multi_routes:
@@ -1329,6 +1937,101 @@ with st.sidebar:
 
             st.session_state.waypoints = []
             st.rerun()
+
+    st.divider()
+
+    st.header("🔁 Route Presets")
+
+    st.caption(
+        "Save a destination as a one-tap preset, e.g. "
+        "\"Commute to Work.\""
+    )
+
+    if st.session_state.search_lat is not None:
+
+        preset_name = st.text_input(
+            "Preset name",
+            placeholder="Commute to Work",
+            key="preset_name_input",
+        )
+
+        if st.button(
+            "💾 Save current destination as preset",
+            use_container_width=True,
+        ):
+
+            if preset_name.strip():
+
+                st.session_state.route_presets.append(
+                    {
+                        "name": preset_name.strip(),
+                        "lat": st.session_state.search_lat,
+                        "lon": st.session_state.search_lon,
+                        "address": st.session_state.search_address,
+                    }
+                )
+
+                save_persisted_data()
+
+                st.success(f"Saved preset \"{preset_name.strip()}\"")
+
+            else:
+
+                st.warning("Give the preset a name first.")
+
+    if st.session_state.route_presets:
+
+        for preset_index, preset in enumerate(
+            st.session_state.route_presets
+        ):
+
+            preset_col1, preset_col2, preset_col3 = st.columns(
+                [3, 1.3, 1]
+            )
+
+            with preset_col1:
+
+                st.write(f"📌 {preset['name']}")
+
+            with preset_col2:
+
+                if st.button(
+                    "🛣️ Go",
+                    key=f"go_preset_{preset_index}",
+                ):
+
+                    st.session_state.search_lat = preset["lat"]
+                    st.session_state.search_lon = preset["lon"]
+                    st.session_state.search_address = preset["address"]
+
+                    st.session_state.routes = []
+
+                    if st.session_state.current_lat is not None:
+
+                        with st.spinner("Finding the best route..."):
+
+                            preset_routes = get_osrm_routes(
+                                st.session_state.current_lat,
+                                st.session_state.current_lon,
+                                preset["lat"],
+                                preset["lon"],
+                                st.session_state.route_mode,
+                            )
+
+                        st.session_state.routes = preset_routes
+
+                    st.rerun()
+
+            with preset_col3:
+
+                if st.button(
+                    "✕",
+                    key=f"remove_preset_{preset_index}",
+                ):
+
+                    st.session_state.route_presets.pop(preset_index)
+                    save_persisted_data()
+                    st.rerun()
 
     st.divider()
 
@@ -1547,31 +2250,65 @@ if st.session_state.routes:
         st.session_state.routes
     ):
 
+        if not route["geometry"]:
+            continue
+
         if index == 0:
 
-            route_color = "#4285F4"
-            route_weight = 8
-            route_opacity = 0.90
+            # Traffic-aware coloring on the primary route:
+            # Google's speedReadingIntervals classify segments
+            # of the polyline as NORMAL / SLOW / TRAFFIC_JAM.
+            speed_intervals = route.get("speed_intervals", [])
+
+            speed_color_map = {
+                "NORMAL": "#22c55e",
+                "SLOW": "#f59e0b",
+                "TRAFFIC_JAM": "#ef4444",
+            }
+
+            if speed_intervals:
+
+                geometry = route["geometry"]
+
+                for interval in speed_intervals:
+
+                    start_i = interval.get("startPolylinePointIndex", 0)
+                    end_i = interval.get(
+                        "endPolylinePointIndex", len(geometry) - 1
+                    )
+                    speed_label = interval.get("speed", "NORMAL")
+
+                    segment = geometry[start_i:end_i + 1]
+
+                    if len(segment) < 2:
+                        continue
+
+                    folium.PolyLine(
+                        segment,
+                        color=speed_color_map.get(speed_label, "#4285F4"),
+                        weight=8,
+                        opacity=0.9,
+                        tooltip=f"⭐ Recommended route ({speed_label.title()})",
+                    ).add_to(m)
+
+            else:
+
+                folium.PolyLine(
+                    route["geometry"],
+                    color="#4285F4",
+                    weight=8,
+                    opacity=0.90,
+                    tooltip="⭐ Recommended route",
+                ).add_to(m)
 
         else:
 
-            route_color = "#7b8794"
-            route_weight = 5
-            route_opacity = 0.50
-
-        if route["geometry"]:
-
             folium.PolyLine(
                 route["geometry"],
-                color=route_color,
-                weight=route_weight,
-                opacity=route_opacity,
-                tooltip=(
-                    "⭐ Recommended route"
-                    if index == 0
-                    else
-                    f"Alternative route {index + 1}"
-                ),
+                color="#7b8794",
+                weight=5,
+                opacity=0.50,
+                tooltip=f"Alternative route {index + 1}",
             ).add_to(m)
 
     main_route = (
@@ -1803,6 +2540,22 @@ if st.session_state.routes:
     )
 
     # --------------------------------------------------------
+    # DESTINATION WEATHER
+    # --------------------------------------------------------
+
+    weather = get_destination_weather(
+        st.session_state.search_lat,
+        st.session_state.search_lon,
+    )
+
+    if weather:
+
+        st.caption(
+            f"{weather['icon']} {weather['temperature']}°F, "
+            f"{weather['label']} at destination"
+        )
+
+    # --------------------------------------------------------
     # LEAVE BY (if the user set a target arrival time)
     # --------------------------------------------------------
 
@@ -1931,6 +2684,36 @@ if st.session_state.routes:
             "🛣️ Route Options"
         )
 
+        # Quick visual comparison of alternatives before the
+        # detail cards.
+        chart_labels = [
+            "⭐ Recommended" if i == 0 else f"Route {i + 1}"
+            for i in range(len(st.session_state.routes))
+        ]
+
+        chart_minutes = [
+            round(r["duration_minutes"], 1)
+            for r in st.session_state.routes
+        ]
+
+        chart_distance = [
+            round(r["distance_miles"], 1)
+            for r in st.session_state.routes
+        ]
+
+        chart_data = {
+            "Route": chart_labels,
+            "Minutes": chart_minutes,
+            "Miles": chart_distance,
+        }
+
+        st.bar_chart(
+            chart_data,
+            x="Route",
+            y="Minutes",
+            height=200,
+        )
+
         for index, route in enumerate(
             st.session_state.routes
         ):
@@ -1976,6 +2759,43 @@ if st.session_state.routes:
                 </div>
                 """,
                 unsafe_allow_html=True,
+            )
+
+    # --------------------------------------------------------
+    # ELEVATION PROFILE (useful for walking/cycling especially)
+    # --------------------------------------------------------
+
+    if (
+        st.session_state.route_mode in ("walking", "cycling")
+        and main_route["geometry"]
+    ):
+
+        st.divider()
+
+        st.subheader("⛰️ Elevation Profile")
+
+        with st.spinner("Loading elevation data..."):
+
+            elevation_points = get_elevation_profile(
+                tuple(
+                    tuple(pt)
+                    for pt in main_route["geometry"][::max(
+                        1, len(main_route["geometry"]) // 30
+                    )]
+                )
+            )
+
+        if elevation_points:
+
+            st.line_chart(
+                {"Elevation (ft)": elevation_points},
+                height=180,
+            )
+
+        else:
+
+            st.caption(
+                "Elevation data unavailable for this route."
             )
 
 
@@ -2084,6 +2904,8 @@ if st.session_state.search_address:
                 favorite
             )
 
+            save_persisted_data()
+
             st.success(
                 "Place saved!"
             )
@@ -2106,6 +2928,30 @@ if st.session_state.favorites:
     st.subheader(
         "⭐ Saved Places"
     )
+
+    if st.session_state.last_removed_favorite is not None:
+
+        undo_fav_col1, undo_fav_col2 = st.columns([4, 1])
+
+        with undo_fav_col1:
+
+            st.caption(
+                f"Removed \"{st.session_state.last_removed_favorite['name']}\""
+            )
+
+        with undo_fav_col2:
+
+            if st.button("↩️ Undo", key="undo_favorite"):
+
+                st.session_state.favorites.append(
+                    st.session_state.last_removed_favorite
+                )
+
+                st.session_state.last_removed_favorite = None
+
+                save_persisted_data()
+
+                st.rerun()
 
     for index, favorite in enumerate(
         st.session_state.favorites
@@ -2157,9 +3003,11 @@ if st.session_state.favorites:
                 key=f"remove_{index}",
             ):
 
-                st.session_state.favorites.pop(
-                    index
+                st.session_state.last_removed_favorite = (
+                    st.session_state.favorites.pop(index)
                 )
+
+                save_persisted_data()
 
                 st.rerun()
 
