@@ -267,6 +267,8 @@ defaults = {
     "route_presets": [],
 
     "optimize_stop_order": False,
+
+    "nearby_place_selected_index": None,
 }
 
 for key, value in defaults.items():
@@ -3175,13 +3177,114 @@ if st.session_state.nearby_places:
         "🏪 Nearby Places"
     )
 
-    for place in (
+    has_existing_destination = (
+        st.session_state.search_lat is not None
+    )
+
+    for place_index, place in enumerate(
         st.session_state.nearby_places[:20]
     ):
 
-        st.markdown(
-            f"📍 **{place['name']}**"
-        )
+        place_col1, place_col2 = st.columns([5, 1])
+
+        with place_col1:
+
+            st.markdown(
+                f"📍 **{place['name']}**"
+            )
+
+        with place_col2:
+
+            if st.button(
+                "Select",
+                key=f"select_nearby_{place_index}",
+            ):
+
+                if (
+                    st.session_state.nearby_place_selected_index
+                    == place_index
+                ):
+
+                    # Toggle closed if clicked again.
+                    st.session_state.nearby_place_selected_index = None
+
+                else:
+
+                    st.session_state.nearby_place_selected_index = (
+                        place_index
+                    )
+
+                st.rerun()
+
+        if st.session_state.nearby_place_selected_index == place_index:
+
+            if has_existing_destination:
+
+                st.caption(
+                    f"You already have a destination set "
+                    f"(\"{st.session_state.search_address}\"). "
+                    f"What would you like to do with **{place['name']}**?"
+                )
+
+                choice_col1, choice_col2 = st.columns(2)
+
+                with choice_col1:
+
+                    if st.button(
+                        "➕ Add as a stop on the way",
+                        key=f"add_stop_nearby_{place_index}",
+                        use_container_width=True,
+                    ):
+
+                        st.session_state.waypoints.append(
+                            {
+                                "lat": place["lat"],
+                                "lon": place["lon"],
+                                "name": place["name"],
+                            }
+                        )
+
+                        st.session_state.nearby_place_selected_index = None
+
+                        st.success(
+                            f"Added \"{place['name']}\" as a stop."
+                        )
+
+                        st.rerun()
+
+                with choice_col2:
+
+                    if st.button(
+                        "🎯 Go here instead",
+                        key=f"go_here_nearby_{place_index}",
+                        use_container_width=True,
+                    ):
+
+                        st.session_state.search_lat = place["lat"]
+                        st.session_state.search_lon = place["lon"]
+                        st.session_state.search_address = place["name"]
+
+                        st.session_state.routes = []
+                        st.session_state.nearby_place_selected_index = None
+
+                        st.rerun()
+
+            else:
+
+                if st.button(
+                    "🎯 Set as destination",
+                    key=f"go_here_nearby_{place_index}",
+                    use_container_width=True,
+                ):
+
+                    st.session_state.search_lat = place["lat"]
+                    st.session_state.search_lon = place["lon"]
+                    st.session_state.search_address = place["name"]
+
+                    st.session_state.routes = []
+                    st.session_state.nearby_place_selected_index = None
+
+                    st.rerun()
 
 
 # ============================================================
