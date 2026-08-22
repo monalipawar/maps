@@ -1232,6 +1232,131 @@ def get_nearby_places(
     category,
 ):
 
+    # Google place "included types" per category. Google's
+    # Nearby Search uses its business/POI database, which is
+    # far more complete than OSM for real-world places (same
+    # reason we switched destination search over earlier).
+    google_type_map = {
+        "🍕 Restaurants": ["restaurant"],
+        "☕ Cafes": ["cafe"],
+        "⛽ Gas Stations": ["gas_station"],
+        "🏥 Hospitals": ["hospital"],
+        "🏨 Hotels": ["lodging"],
+        "🛒 Shops": ["store"],
+        "🏫 Schools": ["school"],
+        "🏦 Banks": ["bank"],
+    }
+
+    included_types = google_type_map.get(
+        category,
+        ["restaurant"],
+    )
+
+    if GOOGLE_MAPS_API_KEY:
+
+        places = get_nearby_places_google(
+            lat,
+            lon,
+            category,
+            tuple(included_types),
+        )
+
+        if places:
+            return places
+
+    # Fall back to the free OSM/Overpass search if Google
+    # is unavailable or returns nothing.
+    return get_nearby_places_overpass(lat, lon, category)
+
+
+def get_nearby_places_google(
+    lat,
+    lon,
+    category,
+    included_types,
+):
+
+    url = "https://places.googleapis.com/v1/places:searchNearby"
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": (
+            "places.displayName,"
+            "places.formattedAddress,"
+            "places.location"
+        ),
+    }
+
+    body = {
+        "includedTypes": list(included_types),
+        "maxResultCount": 20,
+        "locationRestriction": {
+            "circle": {
+                "center": {
+                    "latitude": lat,
+                    "longitude": lon,
+                },
+                "radius": 5000.0,
+            }
+        },
+        "rankPreference": "DISTANCE",
+    }
+
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            timeout=15,
+        )
+
+        response.raise_for_status()
+
+        st.session_state.google_api_call_count += 1
+
+        data = response.json()
+
+        places = []
+
+        for place in data.get("places", []):
+
+            location = place.get("location", {})
+
+            place_lat = location.get("latitude")
+            place_lon = location.get("longitude")
+
+            if place_lat is None or place_lon is None:
+                continue
+
+            name = place.get(
+                "displayName", {}
+            ).get("text", "Unnamed place")
+
+            places.append(
+                {
+                    "name": name,
+                    "lat": place_lat,
+                    "lon": place_lon,
+                    "type": category,
+                    "address": place.get("formattedAddress", ""),
+                }
+            )
+
+        return places
+
+    except Exception:
+
+        return []
+
+
+def get_nearby_places_overpass(
+    lat,
+    lon,
+    category,
+):
+
     queries = {
 
         "🍕 Restaurants":
