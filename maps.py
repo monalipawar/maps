@@ -3180,20 +3180,7 @@ if st.session_state.nearby_places:
     ):
 
         st.markdown(
-            f"""
-            <div class="place-card">
-
-                <b>📍 {place['name']}</b>
-
-                <br>
-
-                <span style="color:#687080;">
-                    {place['type']}
-                </span>
-
-            </div>
-            """,
-            unsafe_allow_html=True,
+            f"📍 **{place['name']}**"
         )
 
 
